@@ -12,7 +12,15 @@ import (
 
 // Hook event name constants.
 const (
+	// EventPreToolUse fires before a tool call runs and can allow, deny,
+	// rewrite, or annotate it.
 	EventPreToolUse = "PreToolUse"
+	// EventStop fires once per top-level turn, after the agent has
+	// finished responding. It is the same moment the "Crush is
+	// waiting..." notification is published. The turn is already over, so
+	// Stop hooks are observational: their decisions cannot block or alter
+	// anything.
+	EventStop = "Stop"
 )
 
 // HaltExitCode is the exit code that halts the whole turn. 2 blocks the

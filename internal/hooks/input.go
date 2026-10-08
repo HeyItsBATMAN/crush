@@ -16,30 +16,60 @@ import (
 // an older version. Unknown higher versions are still parsed but logged.
 const SupportedOutputVersion = 1
 
+// EventInput describes a single hook event invocation. Not every field
+// applies to every event: tool events (PreToolUse) carry ToolName and
+// ToolInput, while EventStop carries the session title and the final
+// assistant Message.
+type EventInput struct {
+	// EventName is the hook event being fired (e.g. PreToolUse, Stop).
+	EventName string
+	// SessionID is the session the event belongs to.
+	SessionID string
+	// SessionTitle is the human-readable session title. Set by EventStop.
+	SessionTitle string
+	// CWD is the working directory the hook runs in.
+	CWD string
+	// ProjectDir is the project root, exposed only via the environment.
+	ProjectDir string
+	// ToolName and ToolInput are set for tool events. ToolInput is the
+	// raw JSON input the model sent to the tool.
+	ToolName  string
+	ToolInput string
+	// Message is the final assistant text for the turn. Set by EventStop.
+	Message string
+}
+
 // Payload is the JSON structure piped to hook commands via stdin.
 // ToolInput is emitted as a parsed JSON object for compatibility with
 // Claude Code hooks (which expect tool_input to be an object, not a
-// string).
+// string). Per-event fields that don't apply to the current event are
+// omitted entirely rather than emitted empty.
 type Payload struct {
-	Event     string          `json:"event"`
-	SessionID string          `json:"session_id"`
-	CWD       string          `json:"cwd"`
-	ToolName  string          `json:"tool_name"`
-	ToolInput json.RawMessage `json:"tool_input"`
+	Event        string          `json:"event"`
+	SessionID    string          `json:"session_id"`
+	SessionTitle string          `json:"session_title,omitempty"`
+	CWD          string          `json:"cwd"`
+	ToolName     string          `json:"tool_name,omitempty"`
+	ToolInput    json.RawMessage `json:"tool_input,omitempty"`
+	Message      string          `json:"message,omitempty"`
 }
 
 // BuildPayload constructs the JSON stdin payload for a hook command.
-func BuildPayload(eventName, sessionID, cwd, toolName, toolInputJSON string) []byte {
-	toolInput := json.RawMessage(toolInputJSON)
-	if !json.Valid(toolInput) {
-		toolInput = json.RawMessage("{}")
-	}
+func BuildPayload(in EventInput) []byte {
 	p := Payload{
-		Event:     eventName,
-		SessionID: sessionID,
-		CWD:       cwd,
-		ToolName:  toolName,
-		ToolInput: toolInput,
+		Event:        in.EventName,
+		SessionID:    in.SessionID,
+		SessionTitle: in.SessionTitle,
+		CWD:          in.CWD,
+		ToolName:     in.ToolName,
+		Message:      in.Message,
+	}
+	if in.ToolName != "" {
+		toolInput := json.RawMessage(in.ToolInput)
+		if !json.Valid(toolInput) {
+			toolInput = json.RawMessage("{}")
+		}
+		p.ToolInput = toolInput
 	}
 	data, err := json.Marshal(p)
 	if err != nil {
@@ -49,27 +79,37 @@ func BuildPayload(eventName, sessionID, cwd, toolName, toolInputJSON string) []b
 }
 
 // BuildEnv constructs the environment variable slice for a hook command.
-// It includes all current process env vars plus hook-specific ones.
-func BuildEnv(eventName, toolName, sessionID, cwd, projectDir, toolInputJSON string) []string {
+// It includes all current process env vars plus hook-specific ones. Event
+// specific variables are only set when the field they describe is
+// populated, so a Stop hook never sees a stale CRUSH_TOOL_NAME.
+func BuildEnv(in EventInput) []string {
 	env := os.Environ()
 	env = append(env, shell.CrushEnvMarkers()...)
 	env = append(
 		env,
-		fmt.Sprintf("CRUSH_EVENT=%s", eventName),
-		fmt.Sprintf("CRUSH_TOOL_NAME=%s", toolName),
-		fmt.Sprintf("CRUSH_SESSION_ID=%s", sessionID),
-		fmt.Sprintf("CRUSH_CWD=%s", cwd),
-		fmt.Sprintf("CRUSH_PROJECT_DIR=%s", projectDir),
+		fmt.Sprintf("CRUSH_EVENT=%s", in.EventName),
+		fmt.Sprintf("CRUSH_SESSION_ID=%s", in.SessionID),
+		fmt.Sprintf("CRUSH_CWD=%s", in.CWD),
+		fmt.Sprintf("CRUSH_PROJECT_DIR=%s", in.ProjectDir),
 	)
 
 	// Extract tool-specific env vars from the JSON input.
-	if toolInputJSON != "" {
-		if cmd := gjson.Get(toolInputJSON, "command"); cmd.Exists() {
+	if in.ToolName != "" {
+		env = append(env, fmt.Sprintf("CRUSH_TOOL_NAME=%s", in.ToolName))
+	}
+	if in.SessionTitle != "" {
+		env = append(env, fmt.Sprintf("CRUSH_SESSION_TITLE=%s", in.SessionTitle))
+	}
+	if in.ToolInput != "" {
+		if cmd := gjson.Get(in.ToolInput, "command"); cmd.Exists() {
 			env = append(env, fmt.Sprintf("CRUSH_TOOL_INPUT_COMMAND=%s", cmd.String()))
 		}
-		if fp := gjson.Get(toolInputJSON, "file_path"); fp.Exists() {
+		if fp := gjson.Get(in.ToolInput, "file_path"); fp.Exists() {
 			env = append(env, fmt.Sprintf("CRUSH_TOOL_INPUT_FILE_PATH=%s", fp.String()))
 		}
+	}
+	if in.Message != "" {
+		env = append(env, fmt.Sprintf("CRUSH_STOP_MESSAGE=%s", in.Message))
 	}
 
 	return env
@@ -114,11 +154,11 @@ func parseStdout(stdout string) HookResult {
 	}
 
 	result := HookResult{
-		Halt:    parsed.Halt,
-		Reason:  parsed.Reason,
-		Context: parseContext(parsed.Context),
+		Decision: parseDecision(parsed.Decision),
+		Halt:     parsed.Halt,
+		Reason:   parsed.Reason,
+		Context:  parseContext(parsed.Context),
 	}
-	result.Decision = parseDecision(parsed.Decision)
 	result.UpdatedInput = rawToString(parsed.UpdatedInput)
 	return result
 }

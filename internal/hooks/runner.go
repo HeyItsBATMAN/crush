@@ -85,10 +85,46 @@ func (r *Runner) Hooks() []config.HookConfig {
 	return out
 }
 
-// Run executes all matching hooks for the given event and tool, returning
-// an aggregated result.
+// Run executes all matching hooks for a tool event (e.g. PreToolUse) and
+// returns an aggregated result.
 func (r *Runner) Run(ctx context.Context, eventName, sessionID, toolName, toolInputJSON string) (AggregateResult, error) {
-	matching := r.matchingHooks(toolName)
+	return r.run(ctx, EventInput{
+		EventName:  eventName,
+		SessionID:  sessionID,
+		CWD:        r.cwd,
+		ProjectDir: r.projectDir,
+		ToolName:   toolName,
+		ToolInput:  toolInputJSON,
+	}, r.matchingHooks(toolName))
+}
+
+// RunStop executes the Stop hooks for the end of a top-level turn.
+// sessionTitle is the human-readable session title (may be empty) and
+// message is the final assistant text for the turn (may be empty).
+//
+// Matchers are ignored for Stop: there is no tool name to test against, so
+// every configured Stop hook runs. Because the turn has already ended,
+// decisions are observational — deny, halt, context, and updated_input are
+// parsed but cannot affect anything, and callers typically only care that
+// the hooks ran.
+func (r *Runner) RunStop(ctx context.Context, sessionID, sessionTitle, message string) (AggregateResult, error) {
+	all := make([]config.HookConfig, 0, len(r.hooks))
+	for _, h := range r.hooks {
+		all = append(all, h.cfg)
+	}
+	return r.run(ctx, EventInput{
+		EventName:    EventStop,
+		SessionID:    sessionID,
+		SessionTitle: sessionTitle,
+		CWD:          r.cwd,
+		ProjectDir:   r.projectDir,
+		Message:      message,
+	}, all)
+}
+
+// run executes the given hooks in parallel and returns their aggregated
+// result. in supplies the event payload and environment.
+func (r *Runner) run(ctx context.Context, in EventInput, matching []config.HookConfig) (AggregateResult, error) {
 	if len(matching) == 0 {
 		return AggregateResult{Decision: DecisionNone}, nil
 	}
@@ -104,8 +140,8 @@ func (r *Runner) Run(ctx context.Context, eventName, sessionID, toolName, toolIn
 		deduped = append(deduped, h)
 	}
 
-	envVars := BuildEnv(eventName, toolName, sessionID, r.cwd, r.projectDir, toolInputJSON)
-	payload := BuildPayload(eventName, sessionID, r.cwd, toolName, toolInputJSON)
+	envVars := BuildEnv(in)
+	payload := BuildPayload(in)
 
 	results := make([]HookResult, len(deduped))
 	var wg sync.WaitGroup
@@ -119,7 +155,7 @@ func (r *Runner) Run(ctx context.Context, eventName, sessionID, toolName, toolIn
 	}
 	wg.Wait()
 
-	agg := aggregate(results, toolInputJSON)
+	agg := aggregate(results, in.ToolInput)
 	agg.Hooks = make([]HookInfo, len(deduped))
 	for i, h := range deduped {
 		agg.Hooks[i] = HookInfo{
@@ -131,13 +167,15 @@ func (r *Runner) Run(ctx context.Context, eventName, sessionID, toolName, toolIn
 			InputRewrite: results[i].UpdatedInput != "",
 		}
 	}
-	slog.Info(
-		"Hook completed",
-		"event", eventName,
-		"tool", toolName,
+	logArgs := []any{
+		"event", in.EventName,
 		"hooks", len(deduped),
 		"decision", agg.Decision.String(),
-	)
+	}
+	if in.ToolName != "" {
+		logArgs = append(logArgs, "tool", in.ToolName)
+	}
+	slog.Info("Hook completed", logArgs...)
 	return agg, nil
 }
 

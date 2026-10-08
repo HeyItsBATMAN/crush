@@ -212,20 +212,27 @@ option ui exit-banner compact
 
 ## Hooks runtime
 
-Hooks are user-defined shell commands that fire on agent events. Currently only
-`PreToolUse` is supported, which runs before a tool executes. This behavior is
-the same however the hook is defined (`hook add` or JSON).
+Hooks are user-defined shell commands that fire on agent events. Two events are
+currently supported: `PreToolUse`, which runs before a tool executes, and
+`Stop`, which runs once per top-level turn after the agent finishes responding.
+This behavior is the same however the hook is defined (`hook add` or JSON).
 
 ### How hooks work
 
 1. When a tool is about to be called, all `PreToolUse` hooks with a matching
    `matcher` (or no matcher) run in parallel.
-2. Duplicate commands are deduplicated — each unique command runs at most once.
-3. The hook receives JSON on **stdin** and hook-specific **environment
+2. When a top-level turn ends, all `Stop` hooks run in parallel. `Stop` has no
+   tool to match, so `matcher` is ignored and every `Stop` hook runs.
+3. Duplicate commands are deduplicated — each unique command runs at most once.
+4. The hook receives JSON on **stdin** and hook-specific **environment
    variables**.
 
 Event names are case-insensitive and accept snake_case: `PreToolUse`,
-`pretooluse`, `pre_tool_use`, `PRE_TOOL_USE` all work.
+`pretooluse`, `pre_tool_use`, `PRE_TOOL_USE`, `Stop`, and `STOP` all work.
+
+> `Stop` hooks are observational: the turn is already over, so `decision`,
+> `halt`, `context`, and `updated_input` are ignored. Use them for side effects
+> such as notifications or logging.
 
 ### Hook input (stdin)
 
@@ -239,17 +246,34 @@ Event names are case-insensitive and accept snake_case: `PreToolUse`,
 }
 ```
 
+A `Stop` hook gets the session title and the turn's final message instead of
+the tool fields:
+
+```json
+{
+  "event": "Stop",
+  "session_id": "abc-123",
+  "session_title": "Fix the login redirect",
+  "cwd": "/path/to/project",
+  "message": "All tests pass."
+}
+```
+
 ### Hook environment variables
 
 | Variable                     | Description                                       |
 | ---------------------------- | ------------------------------------------------- |
 | `CRUSH_EVENT`                | Event name (e.g. `PreToolUse`)                    |
-| `CRUSH_TOOL_NAME`            | Name of the tool being called                     |
+| `CRUSH_TOOL_NAME`            | Name of the tool being called (`PreToolUse` only) |
 | `CRUSH_SESSION_ID`           | Current session ID                                |
 | `CRUSH_CWD`                  | Current working directory                         |
 | `CRUSH_PROJECT_DIR`          | Project root directory                            |
 | `CRUSH_TOOL_INPUT_COMMAND`   | Value of `command` from tool input (if present)   |
 | `CRUSH_TOOL_INPUT_FILE_PATH` | Value of `file_path` from tool input (if present) |
+| `CRUSH_SESSION_TITLE`        | `Stop` only: the session's title                  |
+| `CRUSH_STOP_MESSAGE`         | `Stop` only: the turn's final message             |
+
+Event-specific variables are only set for the events that use them.
 
 ### Hook output
 

@@ -19,8 +19,8 @@ forward.
 - Hooks are Claude Code-compatible
 - Crush ships with a builtin `crush-hook` skill to write, edit, and configure
   hooks; just tell Crush how to configure Crush
-- Crush currently supports just one hook, `PreToolUse`, with plans to support
-  the full gamut; please let us know which hooks you'd like to see next
+- Crush currently supports two hooks, `PreToolUse` and `Stop`, with plans to
+  support the full gamut; please let us know which hooks you'd like to see next
 - Hooks run in parallel for speed, but their results compose in config order
   for determinism
 
@@ -35,6 +35,8 @@ forward.
 - Auto-approve tools: skip the permission prompt for bash commands that
   you know are safe
 - Log certain tool calls
+- Notify yourself when a turn finishes: ping your phone, play a sound, or
+  update a status light the moment the agent stops
 
 …And lots more. Show us what you're building!
 
@@ -160,7 +162,10 @@ wins when rewriting input, but first deny wins when blocking.
 
 ## Events
 
-Here are the events you can hook into (spoiler: there's currently just one):
+Here are the events you can hook into (spoiler: there are currently two).
+
+Hooks are keyed by event name. Only `command` is required, and you can omit
+`matcher` to match all tools.
 
 ### PreToolUse
 
@@ -181,26 +186,67 @@ interception so a single delegated turn doesn't trigger your hook N times. The
 outer sub-agent tool call itself _is_ hooked, so policy like "never let the
 agent spawn sub-agents" still works.
 
-Hooks are keyed by event name. Only `command` is required, and you can omit
-`matcher` to match all tools.
+### Stop
+
+This hook fires once per top-level turn, right after the agent finishes
+responding. It's the same moment Crush publishes its "Crush is waiting..."
+desktop notification, which makes it the natural place for your own
+notifications, sounds, or end-of-turn bookkeeping.
+
+**Matched against**: nothing. There's no tool call to match on, so `matcher` is
+ignored and every configured `Stop` hook runs.
+
+> [!NOTE]
+> Event names are case insensitive, so `Stop`, `stop`, and `STOP` all work.
+
+**Scope**: `Stop` fires on the **top-level agent** only. Sub-agents (the `agent`
+task tool, `agentic_fetch`, etc.) never fire hooks, so a delegated turn can't
+trigger your `Stop` hooks.
+
+**Observational**: the turn is already over by the time these hooks run, so
+there's nothing to block or rewrite. `decision`, `halt`, `context`, and
+`updated_input` are parsed but ignored. Use `Stop` for side effects (logging,
+notifications, kicking off a build), not for policy.
+
+```jsonc
+{
+  "hooks": {
+    "Stop": [
+      {
+        // No matcher: it would be ignored anyway.
+        "command": "./hooks/notify-finished.sh",
+      },
+    ],
+  },
+}
+```
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+# $CRUSH_SESSION_TITLE names the session, $CRUSH_STOP_MESSAGE holds the
+# agent's final message for the turn. Both are also on stdin as JSON.
+notify-send "Crush finished" "$CRUSH_SESSION_TITLE"
+```
 
 ## Building Hooks
 
 When a hook fires, Crush:
 
 1. Filters hooks whose `matcher` regex matches the tool name (no matcher = match
-   all).
+   all). Events with no tool to match, like `Stop`, skip this step.
 2. Deduplicates by `command` (identical commands run once).
 3. Runs all matching hooks **in parallel** through Crush's embedded POSIX
    shell (see [Execution model](#execution-model)).
 4. Waits for all to finish (or time out), then aggregates results **in config
    order**: deny wins over allow, allow wins over none; `updated_input` patches
    shallow-merge in order.
-5. Applies the result **before** permission checks. If the aggregated decision
-   is `deny`, the tool call is blocked and you never see a permission prompt
-   for it. If it's `allow`, Crush treats that as affirmative pre-approval and
-   also skips the prompt. Silence (no decision) falls through to the normal
-   permission flow.
+5. For `PreToolUse`, applies the result **before** permission checks. If the
+   aggregated decision is `deny`, the tool call is blocked and you never see a
+   permission prompt for it. If it's `allow`, Crush treats that as affirmative
+   pre-approval and also skips the prompt. Silence (no decision) falls through
+   to the normal permission flow. `Stop` has nothing to apply the result to.
 
 Note that you can omit `matcher` and match in your shell script instead,
 however you'll incur some additional overhead as Crush will still parse and
@@ -216,18 +262,24 @@ available when input is more complex.
 
 The available environment variables are:
 
-| Variable                     | Description                                    |
-| ---------------------------- | ---------------------------------------------- |
-| `CRUSH`                      | Always `1` when running under Crush.           |
-| `AGENT`                      | Always `crush`.                                |
-| `AI_AGENT`                   | Always `crush`.                                |
-| `CRUSH_EVENT`                | The hook event name (e.g. `PreToolUse`).       |
-| `CRUSH_TOOL_NAME`            | The tool being called (e.g. `bash`).           |
-| `CRUSH_SESSION_ID`           | Current session ID.                            |
-| `CRUSH_CWD`                  | Working directory.                             |
-| `CRUSH_PROJECT_DIR`          | Project root directory.                        |
-| `CRUSH_TOOL_INPUT_COMMAND`   | For `bash` calls: the shell command being run. |
-| `CRUSH_TOOL_INPUT_FILE_PATH` | For file tools: the target file path.          |
+| Variable                     | Description                                          |
+| ---------------------------- | ---------------------------------------------------- |
+| `CRUSH`                      | Always `1` when running under Crush.                 |
+| `AGENT`                      | Always `crush`.                                      |
+| `AI_AGENT`                   | Always `crush`.                                      |
+| `CRUSH_EVENT`                | The hook event name (e.g. `PreToolUse`).             |
+| `CRUSH_TOOL_NAME`            | The tool being called (e.g. `bash`). `PreToolUse` only. |
+| `CRUSH_SESSION_ID`           | Current session ID.                                  |
+| `CRUSH_CWD`                  | Working directory.                                   |
+| `CRUSH_PROJECT_DIR`          | Project root directory.                              |
+| `CRUSH_TOOL_INPUT_COMMAND`   | For `bash` calls: the shell command being run.        |
+| `CRUSH_TOOL_INPUT_FILE_PATH` | For file tools: the target file path.                |
+| `CRUSH_SESSION_TITLE`        | `Stop` only: the session's title.                     |
+| `CRUSH_STOP_MESSAGE`         | `Stop` only: the agent's final message for the turn.  |
+
+Event-specific variables are only set for events that populate them, so a
+`Stop` hook never sees `CRUSH_TOOL_NAME`. Note that `CRUSH_STOP_MESSAGE`
+carries the whole final assistant message and can therefore be large.
 
 The `CRUSH`, `AGENT`, and `AI_AGENT` markers are also set by the `bash`
 tool, so a script can detect "am I running under Crush?" the same way in
@@ -244,6 +296,18 @@ Standard input provides the full context as JSON:
   "cwd": "/home/user/project", // Working directory
   "tool_name": "bash", // The tool being called
   "tool_input": { "command": "rm -rf /" }, // The tool's input
+}
+```
+
+For `Stop`, the tool fields are omitted and the turn's final message is
+included instead:
+
+```jsonc
+{
+  "event": "Stop",
+  "session_id": "313909e",
+  "cwd": "/home/user/project",
+  "message": "I've updated the README and run the tests.",
 }
 ```
 
@@ -625,6 +689,24 @@ Extends the common payload:
 }
 ```
 
+### Stdin payload — Stop
+
+Extends the common payload:
+
+```jsonc
+{
+  // ...common fields...
+
+  // string. Human-readable title of the session, the same one the TUI
+  // shows. Empty if the session has no title yet.
+  "session_title": "Fix the login redirect",
+
+  // string. The agent's final message for the turn. Empty when the turn
+  // produced no text (for example, it ended on a tool call).
+  "message": "All tests pass.",
+}
+```
+
 ### Output envelope (common)
 
 Fields a hook may print to stdout on exit 0. All are optional and apply to every
@@ -671,6 +753,14 @@ Extends the common envelope:
 }
 ```
 
+### Output envelope — Stop
+
+`Stop` recognises the common envelope only, and every field is currently
+ignored: the turn has already finished, so nothing can be blocked or rewritten.
+Anything a `Stop` hook prints on stdout is parsed and validated, but has no
+effect. Write side effects (log lines, notifications, files) rather than
+relying on the envelope.
+
 ### Exit codes
 
 | Code  | Meaning                                                                  |
@@ -680,12 +770,14 @@ Extends the common envelope:
 | `49`  | Halt the whole turn. Stderr becomes the halt reason. Stdout is ignored.  |
 | other | Non-blocking error. Logged and ignored; the tool call proceeds.          |
 
-Exit `2` only applies to events that can block something. On events where
-there's nothing to block, it's treated as a non-blocking error.
+Exit `2` and `49` only apply to events that can block or halt something
+(`PreToolUse` today). On events where there's nothing to block, such as `Stop`,
+they're treated as non-blocking errors.
 
 ### Aggregation
 
 When multiple hooks match the same event, results compose in **config order**.
+`Stop` has no matcher, so all of its hooks run.
 
 Universal rules:
 
@@ -705,6 +797,12 @@ PreToolUse-specific rules:
 2. `updated_input` patches shallow-merge sequentially against the original
    `tool_input`. Later patches override earlier ones on colliding keys. Patches
    are **ignored** if the final decision is deny or halt.
+
+Stop-specific rules:
+
+6. `matcher` is ignored, so every configured `Stop` hook runs.
+7. Hook output is observational. Decisions are aggregated and logged, but
+   cannot affect the already-finished turn.
 
 ### Environment variables
 

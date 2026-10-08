@@ -7,17 +7,26 @@ description: Use when the user wants to add, write, debug, or configure a Crush 
 
 Hooks are user-defined commands in `crush.json` that fire at specific points
 during execution, giving deterministic control over tool behavior. They run
-**before** permission checks and **only on the top-level agent's** tool calls —
-sub-agent calls (task tool, agentic_fetch, etc.) are not intercepted, though
-the sub-agent tool call itself is.
+**only on the top-level agent** — sub-agent calls (task tool, agentic_fetch,
+etc.) are not intercepted, though the sub-agent tool call itself is. Tool hooks
+run **before** permission checks; `Stop` hooks run after the turn ends.
 
 For the full reference, see `docs/hooks/README.md`. This skill covers what you
 need to author correct hooks.
 
 ## Supported Events
 
-Only `PreToolUse` is currently supported. Event names are case-insensitive and
+Two events are currently supported. Event names are case-insensitive and
 accept snake_case (`PreToolUse`, `pretooluse`, `pre_tool_use` all work).
+
+- **`PreToolUse`** — fires before a top-level tool call. Can block, allow,
+  rewrite input, or inject context.
+- **`Stop`** — fires once per top-level turn, right after the agent finishes
+  responding (the same moment the "Crush is waiting..." notification fires).
+  It is **observational**: the turn is over, so `decision`, `halt`, `context`,
+  and `updated_input` are ignored. Use it for side effects such as
+  notifications, sounds, logging, or kicking off a build. `Stop` has no tool
+  to match, so `matcher` is ignored and every configured `Stop` hook runs.
 
 ## Configuration
 
@@ -29,6 +38,12 @@ accept snake_case (`PreToolUse`, `pretooluse`, `pre_tool_use` all work).
         "matcher": "^bash$",              // regex against tool name (optional; omit to match all)
         "command": "./hooks/my-hook.sh",   // required: shell command to run
         "timeout": 10                     // optional: seconds, default 30
+      }
+    ],
+    "Stop": [
+      {
+        // No matcher here: there is no tool to match against.
+        "command": "./hooks/notify-finished.sh"
       }
     ]
   }
@@ -52,12 +67,16 @@ the input/output contract is identical regardless of language.
 | Variable                     | Description                              |
 | ---------------------------- | ---------------------------------------- |
 | `CRUSH_EVENT`                | Event name (e.g. `PreToolUse`)           |
-| `CRUSH_TOOL_NAME`            | Tool being called (e.g. `bash`)          |
+| `CRUSH_TOOL_NAME`            | Tool being called (e.g. `bash`), `PreToolUse` only |
 | `CRUSH_SESSION_ID`           | Current session ID                       |
 | `CRUSH_CWD`                  | Working directory                        |
 | `CRUSH_PROJECT_DIR`          | Project root directory                   |
 | `CRUSH_TOOL_INPUT_COMMAND`   | For `bash` calls: the shell command      |
 | `CRUSH_TOOL_INPUT_FILE_PATH` | For file tools: the target file path     |
+| `CRUSH_SESSION_TITLE`        | `Stop` only: the session's title         |
+| `CRUSH_STOP_MESSAGE`         | `Stop` only: the turn's final message    |
+
+Event-specific variables are only set for the events that use them.
 
 **JSON on stdin:**
 
@@ -68,6 +87,19 @@ the input/output contract is identical regardless of language.
   "cwd": "/home/user/project",
   "tool_name": "bash",
   "tool_input": {"command": "rm -rf /"}
+}
+```
+
+`Stop` carries the session title and the turn's final message instead of the
+tool fields:
+
+```json
+{
+  "event": "Stop",
+  "session_id": "313909e",
+  "session_title": "Fix the login redirect",
+  "cwd": "/home/user/project",
+  "message": "All tests pass."
 }
 ```
 
@@ -183,23 +215,40 @@ If the original call was `{"command": "npm test", "timeout": 60000}`, the
 tool runs with `{"command": "<rewritten>", "timeout": 60000}` — `timeout` is
 preserved.
 
+### Notify when the agent stops
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+notify-send "Crush finished" "$CRUSH_SESSION_TITLE"
+```
+
+Config: `{"command": "./hooks/notify-finished.sh"}` under `hooks.Stop`. No
+matcher: `Stop` hooks always run. Side effects only; anything printed is
+ignored.
+
 ## Authoring Checklist
 
 1. Add `#!/usr/bin/env bash` and `set -euo pipefail` (for shell scripts).
 2. `chmod +x` the script.
-3. Add the entry under `hooks.PreToolUse` in `crush.json` with the right matcher.
-4. Decide intent: inject context (omit `decision`), auto-approve (`"allow"`),
-   block (`exit 2`), or halt (`exit 49`).
-5. If rewriting input, remember `updated_input` is a shallow merge — only
+3. Add the entry under `hooks.PreToolUse` (with a matcher) or `hooks.Stop`
+   (no matcher) in `crush.json`.
+4. For `PreToolUse`, decide intent: inject context (omit `decision`),
+   auto-approve (`"allow"`), block (`exit 2`), or halt (`exit 49`).
+5. For `Stop`, do side effects only — output is ignored because the turn has
+   already ended.
+6. If rewriting input, remember `updated_input` is a shallow merge — only
    include the keys you want to change.
 
 ## Debugging
 
 - Timeouts kill the hook silently and the tool call proceeds. Bump `timeout` if needed.
 - Non-zero exit codes other than 2/49 are logged but don't block — check Crush logs.
+- `Stop` hooks ignore exit 2/49 and their stdout: there is nothing left to block.
 - Use `echo "debug info" >&2` for logging without corrupting stdout JSON.
 - `matcher` is a regex against the tool name. Use `^bash$` (not `bash`) if you
-  don't also want to match `mcp_something_bash`.
+  don't also want to match `mcp_something_bash`. It is ignored for `Stop`.
 
 ## Claude Code Compatibility
 

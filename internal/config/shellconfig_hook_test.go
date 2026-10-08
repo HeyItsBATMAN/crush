@@ -35,3 +35,17 @@ hook remove PreToolUse`)
 
 	require.Empty(t, store.Config().Hooks[hooks.EventPreToolUse])
 }
+
+// TestShellConfigHookStopEvent verifies the Stop event round-trips through
+// the loader under its canonical key, normalized from any case or
+// snake_case spelling.
+func TestShellConfigHookStopEvent(t *testing.T) {
+	store := loadCrushSh(t, `hook add stop --command "notify-send done"
+hook add STOP --command "beep"`)
+
+	hs := store.Config().Hooks[hooks.EventStop]
+	require.Len(t, hs, 2)
+	// Both spellings collapse onto the canonical key; the relative order
+	// of two differently-spelled keys isn't defined.
+	require.ElementsMatch(t, []string{"notify-send done", "beep"}, []string{hs[0].Command, hs[1].Command})
+}

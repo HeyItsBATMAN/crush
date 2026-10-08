@@ -404,6 +404,13 @@ hook add PreToolUse --matcher "^bash$" \
   --command "./hooks/no-haskell.sh" --name no-haskell
 ```
 
+The `Stop` event fires once per turn, after the agent stops. It has no tool to
+match, so no matcher is needed:
+
+```bash
+hook add Stop --command "./hooks/notify-finished.sh" --name notify
+```
+
 #### `hook remove`
 
 Remove hooks from an event. Without `--name`, remove every hook for the event.

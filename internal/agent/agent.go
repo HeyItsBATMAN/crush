@@ -40,6 +40,7 @@ import (
 	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/csync"
+	"github.com/charmbracelet/crush/internal/hooks"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/pubsub"
 	"github.com/charmbracelet/crush/internal/session"
@@ -170,6 +171,10 @@ type SessionAgent interface {
 	BeginAccepted(sessionID string) *AcceptedRun
 	SetTools(tools []fantasy.AgentTool)
 	SetSystemPrompt(systemPrompt string)
+	// SetStopHooks replaces the runner used for the Stop event. Pass nil
+	// to disable Stop hooks (the coordinator rebuilds this from config
+	// whenever the agent's tools are rebuilt).
+	SetStopHooks(runner *hooks.Runner)
 	Cancel(sessionID string)
 	CancelAll()
 	IsSessionBusy(sessionID string) bool
@@ -221,6 +226,13 @@ type sessionAgent struct {
 	isYolo               bool
 	notify               pubsub.Publisher[notify.Notification]
 	runComplete          pubsub.Publisher[notify.RunComplete]
+	// stopHooks runs the configured Stop hooks at the end of each
+	// top-level turn. Nil when none are configured or when this agent is
+	// a sub-agent, and Stop hooks never fire for sub-agents. Guarded by
+	// stopHooksMu because SetStopHooks can run on a config-change
+	// goroutine while a turn is finishing.
+	stopHooksMu sync.RWMutex
+	stopHooks   *hooks.Runner
 
 	messageQueue   *csync.Map[string, []SessionAgentCall]
 	activeRequests *csync.Map[string, *activeCancel]
@@ -278,6 +290,9 @@ type SessionAgentOptions struct {
 	Tools                []fantasy.AgentTool
 	Notify               pubsub.Publisher[notify.Notification]
 	RunComplete          pubsub.Publisher[notify.RunComplete]
+	// StopHooks runs the Stop hooks for this agent. Ignored for
+	// sub-agents, which never fire hooks.
+	StopHooks *hooks.Runner
 }
 
 func NewSessionAgent(
@@ -296,6 +311,7 @@ func NewSessionAgent(
 		isYolo:               opts.IsYolo,
 		notify:               opts.Notify,
 		runComplete:          opts.RunComplete,
+		stopHooks:            opts.StopHooks,
 		messageQueue:         csync.NewMap[string, []SessionAgentCall](),
 		activeRequests:       csync.NewMap[string, *activeCancel](),
 		dispatchMu:           csync.NewMap[string, *sync.Mutex](),
@@ -588,6 +604,31 @@ func (a *sessionAgent) publishRunComplete(ctx context.Context, call SessionAgent
 		return
 	}
 	a.runComplete.PublishMustDeliver(ctx, pubsub.UpdatedEvent, complete)
+}
+
+// fireStopHooks runs the configured Stop hooks for a finished top-level
+// turn. It fires at the same point the TypeAgentFinished notification is
+// published and, like it, is skipped for sub-agents. Stop hooks are
+// observational: the turn is already over, so their decisions cannot
+// block or alter anything. Errors are logged and never surfaced to the
+// caller.
+func (a *sessionAgent) fireStopHooks(ctx context.Context, sessionID, sessionTitle, message string) {
+	runner := a.stopHookRunner()
+	if runner == nil || a.isSubAgent {
+		return
+	}
+	// The turn is over, so run the hooks even if the caller's context has
+	// been cancelled: end-of-turn side effects (logging, notifications)
+	// should still fire. Each hook is bounded by its own timeout.
+	result, err := runner.RunStop(context.WithoutCancel(ctx), sessionID, sessionTitle, message)
+	if err != nil {
+		slog.Warn("Failed to run Stop hooks", "session_id", sessionID, "error", err)
+		return
+	}
+	if result.HookCount == 0 {
+		return
+	}
+	slog.Info("Stop hooks completed", "session_id", sessionID, "hooks", result.HookCount)
 }
 
 // ValidateCall performs the cheap structural validation that
@@ -1267,6 +1308,16 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			Type:         notify.TypeAgentFinished,
 		})
 	}
+
+	// Fire the Stop hooks at the same point the turn-finished
+	// notification goes out: once per top-level turn, after the response
+	// is complete. Runs after the publish so a slow hook can't delay the
+	// UI's busy-to-idle transition.
+	stopMessage := ""
+	if currentAssistant != nil {
+		stopMessage = currentAssistant.Content().String()
+	}
+	a.fireStopHooks(ctx, call.SessionID, currentSession.Title, stopMessage)
 
 	// Hand off to the next queued prompt (if any) under dispatchMu so
 	// the transition from this finished run to the queued run is atomic
@@ -2141,6 +2192,21 @@ func (a *sessionAgent) QueuedPromptsList(sessionID string) []string {
 
 func (a *sessionAgent) SetTools(tools []fantasy.AgentTool) {
 	a.tools.SetSlice(tools)
+}
+
+// SetStopHooks replaces the Stop event runner. Safe to call at any time;
+// a nil runner disables Stop hooks.
+func (a *sessionAgent) SetStopHooks(runner *hooks.Runner) {
+	a.stopHooksMu.Lock()
+	defer a.stopHooksMu.Unlock()
+	a.stopHooks = runner
+}
+
+// stopHookRunner returns the current Stop hooks runner, if any.
+func (a *sessionAgent) stopHookRunner() *hooks.Runner {
+	a.stopHooksMu.RLock()
+	defer a.stopHooksMu.RUnlock()
+	return a.stopHooks
 }
 
 func (a *sessionAgent) SetSystemPrompt(systemPrompt string) {

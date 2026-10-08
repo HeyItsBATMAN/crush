@@ -86,12 +86,13 @@ internal/
 - **Pub/sub**: `internal/pubsub` for decoupled communication between agent,
   UI, and services.
 - **Hooks**: User-defined shell commands in `crushrc` (or `crush.json`)
-  that fire before tool execution. The engine (`internal/hooks/`) is
+  that fire on hook events. The engine (`internal/hooks/`) is
   independent of fantasy and agent — it takes inputs, runs commands,
-  returns decisions. The `hookedTool` decorator in
-  `internal/agent/hooked_tool.go` wraps tools at the coordinator level.
-  Hooks run before permission checks. See `HOOKS.md` for the user-facing
-  protocol.
+  returns decisions. Two events are wired up: `PreToolUse`, applied by the
+  `hookedTool` decorator in `internal/agent/hooked_tool.go` before a
+  top-level tool runs (before permission checks), and `Stop`, fired by the
+  session agent at the end of each top-level turn. Sub-agents never fire
+  hooks. See `docs/hooks/README.md` for the user-facing protocol.
 - **CGO disabled**: builds with `CGO_ENABLED=0` and
   `GOEXPERIMENT=greenteagc`.
 

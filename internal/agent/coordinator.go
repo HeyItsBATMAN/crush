@@ -810,6 +810,7 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 	large := models().Large
 
 	largeProviderCfg, _ := c.cfg.Config().Providers.Get(large.ModelCfg.Provider)
+
 	result := NewSessionAgent(SessionAgentOptions{
 		Models:               models,
 		SystemPromptPrefix:   largeProviderCfg.SystemPromptPrefix,
@@ -823,6 +824,7 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 		Tools:                nil,
 		Notify:               c.notify,
 		RunComplete:          c.runComplete,
+		StopHooks:            c.stopHooksFor(isSubAgent),
 	})
 
 	// The readiness goroutines below perform one-time setup — building the
@@ -856,6 +858,19 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 	})
 
 	return result, nil
+}
+
+// stopHooksFor builds the Stop hooks runner from the current config.
+// Sub-agents never fire hooks, so they get no runner.
+func (c *coordinator) stopHooksFor(isSubAgent bool) *hooks.Runner {
+	if isSubAgent {
+		return nil
+	}
+	stopCfgs := c.cfg.Config().Hooks[hooks.EventStop]
+	if len(stopCfgs) == 0 {
+		return nil
+	}
+	return hooks.NewRunner(stopCfgs, c.cfg.WorkingDir(), c.cfg.WorkingDir())
 }
 
 func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, isSubAgent bool) ([]fantasy.AgentTool, error) {
@@ -1448,6 +1463,11 @@ func (c *coordinator) updateAgentModels(ctx context.Context, agent SessionAgent,
 		return err
 	}
 	agent.SetTools(tools)
+
+	// Refresh the Stop hooks alongside the tools. buildTools only rebuilds
+	// the PreToolUse runner, so without this a Stop hook added to config
+	// after startup would never take effect on a live agent.
+	agent.SetStopHooks(c.stopHooksFor(false))
 	return nil
 }
 

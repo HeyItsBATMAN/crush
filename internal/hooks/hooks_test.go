@@ -2,7 +2,10 @@ package hooks
 
 import (
 	"context"
+	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -178,7 +181,14 @@ func TestParseStdout(t *testing.T) {
 func TestBuildEnv(t *testing.T) {
 	t.Parallel()
 
-	env := BuildEnv(EventPreToolUse, "bash", "sess-1", "/work", "/project", `{"command":"ls","file_path":"/tmp/f.txt"}`)
+	env := BuildEnv(EventInput{
+		EventName:  EventPreToolUse,
+		SessionID:  "sess-1",
+		CWD:        "/work",
+		ProjectDir: "/project",
+		ToolName:   "bash",
+		ToolInput:  `{"command":"ls","file_path":"/tmp/f.txt"}`,
+	})
 
 	envMap := make(map[string]string)
 	for _, e := range env {
@@ -204,6 +214,37 @@ func TestBuildEnv(t *testing.T) {
 	require.Equal(t, "crush", envMap["AI_AGENT"])
 }
 
+// TestBuildEnvStop verifies the Stop event exposes the turn's final
+// message and does not leak tool-specific variables.
+func TestBuildEnvStop(t *testing.T) {
+	t.Parallel()
+
+	env := BuildEnv(EventInput{
+		EventName:    EventStop,
+		SessionID:    "sess-2",
+		SessionTitle: "My session",
+		CWD:          "/work",
+		ProjectDir:   "/project",
+		Message:      "all done",
+	})
+
+	envMap := make(map[string]string)
+	for _, e := range env {
+		parts := splitFirst(e, "=")
+		if len(parts) == 2 {
+			envMap[parts[0]] = parts[1]
+		}
+	}
+
+	require.Equal(t, EventStop, envMap["CRUSH_EVENT"])
+	require.Equal(t, "My session", envMap["CRUSH_SESSION_TITLE"])
+	require.Equal(t, "all done", envMap["CRUSH_STOP_MESSAGE"])
+	_, hasToolName := envMap["CRUSH_TOOL_NAME"]
+	require.False(t, hasToolName, "Stop hooks must not see CRUSH_TOOL_NAME")
+	_, hasCommand := envMap["CRUSH_TOOL_INPUT_COMMAND"]
+	require.False(t, hasCommand, "Stop hooks must not see tool input vars")
+}
+
 func splitFirst(s, sep string) []string {
 	before, after, found := strings.Cut(s, sep)
 	if !found {
@@ -214,12 +255,70 @@ func splitFirst(s, sep string) []string {
 
 func TestBuildPayload(t *testing.T) {
 	t.Parallel()
-	payload := BuildPayload(EventPreToolUse, "sess-1", "/work", "bash", `{"command":"ls"}`)
+	payload := BuildPayload(EventInput{
+		EventName: EventPreToolUse,
+		SessionID: "sess-1",
+		CWD:       "/work",
+		ToolName:  "bash",
+		ToolInput: `{"command":"ls"}`,
+	})
 	s := string(payload)
 	require.Contains(t, s, `"event":"`+EventPreToolUse+`"`)
 	require.Contains(t, s, `"tool_name":"bash"`)
 	// tool_input should be an object, not a string.
 	require.Contains(t, s, `"tool_input":{"command":"ls"}`)
+}
+
+// TestBuildPayloadStop verifies the Stop payload carries the session title
+// and final message, and omits tool-only fields entirely.
+func TestBuildPayloadStop(t *testing.T) {
+	t.Parallel()
+	payload := BuildPayload(EventInput{
+		EventName:    EventStop,
+		SessionID:    "sess-1",
+		SessionTitle: "My session",
+		CWD:          "/work",
+		Message:      "all done",
+	})
+	s := string(payload)
+	require.Contains(t, s, `"event":"`+EventStop+`"`)
+	require.Contains(t, s, `"session_title":"My session"`)
+	require.Contains(t, s, `"message":"all done"`)
+	require.NotContains(t, s, "tool_name")
+	require.NotContains(t, s, "tool_input")
+}
+
+// TestRunnerStopRunsAllHooks verifies Stop hooks ignore matchers (there is
+// no tool name to match) and receive the turn's session title and final
+// message on stdin/env.
+func TestRunnerStopRunsAllHooks(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	outFile := filepath.Join(dir, "seen.txt")
+	hookCfg := config.HookConfig{
+		Matcher: "^bash$", // Must be ignored for Stop.
+		Command: fmt.Sprintf(`printf '%%s' "$CRUSH_EVENT" > %s; printf '|%%s|%%s' "$CRUSH_SESSION_TITLE" "$CRUSH_STOP_MESSAGE" >> %s`, outFile, outFile),
+	}
+	r := NewRunner([]config.HookConfig{hookCfg}, dir, dir)
+	result, err := r.RunStop(context.Background(), "sess", "My session", "all done")
+	require.NoError(t, err)
+	require.Equal(t, 1, result.HookCount)
+
+	got, err := os.ReadFile(outFile)
+	require.NoError(t, err)
+	require.Equal(t, EventStop+"|My session|all done", string(got))
+}
+
+// TestRunnerStopNoHooksIsNoop verifies a runner with no configured hooks
+// reports zero hooks ran rather than erroring.
+func TestRunnerStopNoHooksIsNoop(t *testing.T) {
+	t.Parallel()
+	r := NewRunner(nil, t.TempDir(), t.TempDir())
+	result, err := r.RunStop(context.Background(), "sess", "My session", "done")
+	require.NoError(t, err)
+	require.Equal(t, 0, result.HookCount)
+	require.Equal(t, DecisionNone, result.Decision)
 }
 
 func TestRunnerExitCode0Allow(t *testing.T) {

@@ -11,6 +11,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/crush/internal/commands"
 	"github.com/charmbracelet/crush/internal/config"
+	"github.com/charmbracelet/crush/internal/skills"
 	"github.com/charmbracelet/crush/internal/ui/common"
 	"github.com/charmbracelet/crush/internal/ui/list"
 	"github.com/charmbracelet/crush/internal/ui/styles"
@@ -20,11 +21,20 @@ import (
 // CommandsID is the identifier for the commands dialog.
 const CommandsID = "commands"
 
+// skillScopeToggleID identifies the scope toggle row at the top of the
+// Skills panel. It is not a real skill; selecting it flips the panel
+// between user-invocable and all skills.
+const skillScopeToggleID = "skill_scope_toggle"
+
+// skillScopeNoteID identifies the informational row shown when the Skills
+// panel has nothing to list in the current scope.
+const skillScopeNoteID = "skill_scope_note"
+
 // CommandType represents the type of commands being displayed.
 type CommandType uint
 
 // String returns the string representation of the CommandType.
-func (c CommandType) String() string { return []string{"System", "User", "MCP"}[c] }
+func (c CommandType) String() string { return []string{"System", "User", "MCP", "Skills"}[c] }
 
 const (
 	sidebarCompactModeBreakpoint = 120
@@ -34,6 +44,7 @@ const (
 	SystemCommands CommandType = iota
 	UserCommands
 	MCPPrompts
+	Skills
 )
 
 // Commands represents a dialog that shows available commands.
@@ -70,6 +81,8 @@ type Commands struct {
 
 	customCommands []commands.CustomCommand
 	mcpPrompts     []commands.MCPPrompt
+	skills         []skills.CatalogEntry
+	showAllSkills  bool
 
 	dockerMCPAvailable     *bool
 	dockerMCPCheckInFlight bool
@@ -78,7 +91,7 @@ type Commands struct {
 var _ Dialog = (*Commands)(nil)
 
 // NewCommands creates a new commands dialog.
-func NewCommands(com *common.Common, sessionID string, hasSession, hasTodos, hasQueue bool, customCommands []commands.CustomCommand, mcpPrompts []commands.MCPPrompt) (*Commands, error) {
+func NewCommands(com *common.Common, sessionID string, hasSession, hasTodos, hasQueue bool, customCommands []commands.CustomCommand, mcpPrompts []commands.MCPPrompt, skillEntries []skills.CatalogEntry) (*Commands, error) {
 	c := &Commands{
 		com:            com,
 		selected:       SystemCommands,
@@ -88,6 +101,7 @@ func NewCommands(com *common.Common, sessionID string, hasSession, hasTodos, has
 		hasQueue:       hasQueue,
 		customCommands: customCommands,
 		mcpPrompts:     mcpPrompts,
+		skills:         skillEntries,
 	}
 
 	help := help.New()
@@ -206,16 +220,20 @@ func (c *Commands) HandleMsg(msg tea.Msg) Action {
 		case key.Matches(msg, c.keyMap.Select):
 			if selectedItem := c.list.SelectedItem(); selectedItem != nil {
 				if item, ok := selectedItem.(*CommandItem); ok && item != nil {
+					if item.id == skillScopeToggleID {
+						c.toggleSkillScope()
+						return nil
+					}
 					return item.Action()
 				}
 			}
 		case key.Matches(msg, c.keyMap.Tab):
-			if len(c.customCommands) > 0 || len(c.mcpPrompts) > 0 {
+			if len(c.commandTypes()) > 1 {
 				c.selected = c.nextCommandType()
 				c.setCommandItems(c.selected)
 			}
 		case key.Matches(msg, c.keyMap.ShiftTab):
-			if len(c.customCommands) > 0 || len(c.mcpPrompts) > 0 {
+			if len(c.commandTypes()) > 1 {
 				c.selected = c.previousCommandType()
 				c.setCommandItems(c.selected)
 			}
@@ -262,11 +280,8 @@ func (c *Commands) Cursor() *tea.Cursor {
 }
 
 // commandsRadioView generates the command type selector radio buttons.
+// System and Skills are always shown; User and MCP only when present.
 func commandsRadioView(sty *styles.Styles, selected CommandType, hasUserCmds bool, hasMCPPrompts bool) string {
-	if !hasUserCmds && !hasMCPPrompts {
-		return ""
-	}
-
 	selectedFn := func(t CommandType) string {
 		if t == selected {
 			return sty.Radio.On.Padding(0, 1).Render() + sty.Radio.Label.Render(t.String())
@@ -284,6 +299,7 @@ func commandsRadioView(sty *styles.Styles, selected CommandType, hasUserCmds boo
 	if hasMCPPrompts {
 		parts = append(parts, selectedFn(MCPPrompts))
 	}
+	parts = append(parts, selectedFn(Skills))
 
 	return strings.Join(parts, " ")
 }
@@ -351,50 +367,92 @@ func (c *Commands) FullHelp() [][]key.Binding {
 	}
 }
 
+// commandTypes returns the command types in display order. System and
+// Skills are always present; User and MCP appear only when they have
+// something to show.
+func (c *Commands) commandTypes() []CommandType {
+	types := []CommandType{SystemCommands}
+	if len(c.customCommands) > 0 {
+		types = append(types, UserCommands)
+	}
+	if len(c.mcpPrompts) > 0 {
+		types = append(types, MCPPrompts)
+	}
+	return append(types, Skills)
+}
+
+// hasSkills reports whether any skill is available to attach.
+func (c *Commands) hasSkills() bool {
+	return len(c.skills) > 0
+}
+
+// hasUserInvocableSkills reports whether any skill can be attached without
+// overriding the user-invocable flag.
+func (c *Commands) hasUserInvocableSkills() bool {
+	for _, entry := range c.skills {
+		if entry.UserInvocable {
+			return true
+		}
+	}
+	return false
+}
+
+// toggleSkillScope flips the Skills panel between user-invocable and all
+// skills and rebuilds the list.
+func (c *Commands) toggleSkillScope() {
+	c.showAllSkills = !c.showAllSkills
+	c.setCommandItems(Skills)
+}
+
+// skillScopeToggleItem builds the always-first row of the Skills panel that
+// switches the panel between user-invocable and all skills. Selecting it
+// never attaches anything; the dialog intercepts it to toggle the scope.
+func (c *Commands) skillScopeToggleItem() *CommandItem {
+	check := "[ ]"
+	scope := "user-invocable only"
+	if c.showAllSkills {
+		check = "[x]"
+		scope = "all skills"
+	}
+	item := NewCommandItem(c.com.Styles, skillScopeToggleID, check+" Show all skills", "", nil)
+	return item.WithDescription("Scope: " + scope + " (enter to toggle)")
+}
+
+// skillScopeNote returns an informational message for the Skills panel when
+// the current scope lists nothing, or an empty string when there is content.
+func (c *Commands) skillScopeNote() string {
+	if c.showAllSkills {
+		if len(c.skills) == 0 {
+			return "No skills found"
+		}
+		return ""
+	}
+	if !c.hasUserInvocableSkills() {
+		return "No user-invocable skills found"
+	}
+	return ""
+}
+
 // nextCommandType returns the next command type in the cycle.
 func (c *Commands) nextCommandType() CommandType {
-	switch c.selected {
-	case SystemCommands:
-		if len(c.customCommands) > 0 {
-			return UserCommands
+	types := c.commandTypes()
+	for i, t := range types {
+		if t == c.selected {
+			return types[(i+1)%len(types)]
 		}
-		if len(c.mcpPrompts) > 0 {
-			return MCPPrompts
-		}
-		fallthrough
-	case UserCommands:
-		if len(c.mcpPrompts) > 0 {
-			return MCPPrompts
-		}
-		fallthrough
-	case MCPPrompts:
-		return SystemCommands
-	default:
-		return SystemCommands
 	}
+	return SystemCommands
 }
 
 // previousCommandType returns the previous command type in the cycle.
 func (c *Commands) previousCommandType() CommandType {
-	switch c.selected {
-	case SystemCommands:
-		if len(c.mcpPrompts) > 0 {
-			return MCPPrompts
+	types := c.commandTypes()
+	for i, t := range types {
+		if t == c.selected {
+			return types[(i-1+len(types))%len(types)]
 		}
-		if len(c.customCommands) > 0 {
-			return UserCommands
-		}
-		return SystemCommands
-	case UserCommands:
-		return SystemCommands
-	case MCPPrompts:
-		if len(c.customCommands) > 0 {
-			return UserCommands
-		}
-		return SystemCommands
-	default:
-		return SystemCommands
 	}
+	return SystemCommands
 }
 
 // setCommandItems sets the command items based on the specified command type.
@@ -435,6 +493,22 @@ func (c *Commands) setCommandItems(commandType CommandType) {
 				Arguments:   cmd.Arguments,
 			}
 			commandItems = append(commandItems, NewCommandItem(c.com.Styles, "mcp_"+cmd.ID, cmd.PromptID, "", action))
+		}
+	case Skills:
+		commandItems = append(commandItems, c.skillScopeToggleItem())
+		for _, entry := range c.skills {
+			if !c.showAllSkills && !entry.UserInvocable {
+				continue
+			}
+			action := ActionAttachSkill{ID: entry.ID, Name: entry.Name}
+			item := NewCommandItem(c.com.Styles, "skill_"+entry.ID, entry.Name, "", action)
+			if entry.Description != "" {
+				item = item.WithDescription(entry.Description)
+			}
+			commandItems = append(commandItems, item)
+		}
+		if note := c.skillScopeNote(); note != "" {
+			commandItems = append(commandItems, NewCommandItem(c.com.Styles, skillScopeNoteID, note, "", nil))
 		}
 	}
 
@@ -572,10 +646,19 @@ func (c *Commands) defaultCommands() []*CommandItem {
 	return commands
 }
 
-// SetCustomCommands sets the custom commands and refreshes the view if user commands are currently displayed.
+// SetCustomCommands sets the custom commands and refreshes the view if user commands or skills are currently displayed.
 func (c *Commands) SetCustomCommands(customCommands []commands.CustomCommand) {
 	c.customCommands = customCommands
 	if c.selected == UserCommands {
+		c.setCommandItems(c.selected)
+	}
+}
+
+// SetSkills sets the discovered skill catalog and refreshes the view if the
+// Skills panel is currently displayed.
+func (c *Commands) SetSkills(skillEntries []skills.CatalogEntry) {
+	c.skills = skillEntries
+	if c.selected == Skills {
 		c.setCommandItems(c.selected)
 	}
 }

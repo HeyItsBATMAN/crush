@@ -288,6 +288,45 @@ func sessionToProto(s session.Session) proto.Session {
 	}
 }
 
+// sessionFromProto maps a wire session back to the domain type.
+//
+// It exists because [session.Session] carries no json tags, so decoding a
+// request body straight into it silently drops every snake_case field:
+// prompt_tokens, completion_tokens, and summary_message_id all fail to bind
+// and end up zero. Mapping explicitly is what keeps a save from wiping the
+// usage counters it was never asked to touch.
+func sessionFromProto(s proto.Session) session.Session {
+	return session.Session{
+		ID:               s.ID,
+		ParentSessionID:  s.ParentSessionID,
+		Title:            s.Title,
+		SummaryMessageID: s.SummaryMessageID,
+		MessageCount:     s.MessageCount,
+		PromptTokens:     s.PromptTokens,
+		CompletionTokens: s.CompletionTokens,
+		Cost:             s.Cost,
+		Todos:            todosFromProto(s.Todos),
+		Channel:          s.Channel,
+		CreatedAt:        s.CreatedAt,
+		UpdatedAt:        s.UpdatedAt,
+	}
+}
+
+func todosFromProto(todos []proto.Todo) []session.Todo {
+	if len(todos) == 0 {
+		return nil
+	}
+	out := make([]session.Todo, len(todos))
+	for i, t := range todos {
+		out[i] = session.Todo{
+			Content:    t.Content,
+			Status:     session.TodoStatus(t.Status),
+			ActiveForm: t.ActiveForm,
+		}
+	}
+	return out
+}
+
 // isSessionBusy reports whether the given workspace has an in-flight
 // agent run for sessionID. It tolerates a nil workspace (treating it as
 // "not busy") so REST handlers can pass GetWorkspace's result through

@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/proto"
 	"github.com/charmbracelet/crush/internal/pubsub"
+	"github.com/charmbracelet/crush/internal/session"
 	"github.com/charmbracelet/crush/internal/skills"
 	"github.com/stretchr/testify/require"
 )
@@ -313,3 +314,47 @@ func TestMessageToProtoPrismModel(t *testing.T) {
 }
 
 func ptrFloat(v float64) *float64 { return &v }
+
+// TestSessionFromProtoPreservesUsageCounters pins the fix for a save that
+// silently wiped usage counters.
+//
+// The domain [session.Session] carries no json tags, so decoding a request
+// body straight into it binds only the single-word fields. A PUT that meant
+// to rename a session therefore zeroed prompt_tokens, completion_tokens, and
+// summary_message_id as a side effect. The handler decodes [proto.Session]
+// and maps across; this asserts both halves of that.
+func TestSessionFromProtoPreservesUsageCounters(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`{
+		"id": "s1",
+		"title": "renamed",
+		"prompt_tokens": 46198,
+		"completion_tokens": 2,
+		"summary_message_id": "m1",
+		"cost": 0.5,
+		"todos": [{"content": "a", "status": "pending", "active_form": "doing a"}],
+		"channel": "chan"
+	}`)
+
+	// The trap: the domain type drops every snake_case field.
+	var domain session.Session
+	require.NoError(t, json.Unmarshal(body, &domain))
+	require.Zero(t, domain.PromptTokens, "domain decode must not be relied on for prompt_tokens")
+	require.Zero(t, domain.CompletionTokens, "domain decode must not be relied on for completion_tokens")
+
+	// The fix: the wire type binds them, and the mapping carries them over.
+	var wire proto.Session
+	require.NoError(t, json.Unmarshal(body, &wire))
+
+	got := sessionFromProto(wire)
+	require.Equal(t, "renamed", got.Title)
+	require.Equal(t, int64(46198), got.PromptTokens)
+	require.Equal(t, int64(2), got.CompletionTokens)
+	require.Equal(t, "m1", got.SummaryMessageID)
+	require.Equal(t, 0.5, got.Cost)
+	require.Equal(t, "chan", got.Channel)
+	require.Len(t, got.Todos, 1)
+	require.Equal(t, session.TodoStatusPending, got.Todos[0].Status)
+	require.Equal(t, "doing a", got.Todos[0].ActiveForm)
+}

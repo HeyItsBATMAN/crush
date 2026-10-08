@@ -350,17 +350,23 @@ func (c *controllerV1) handleGetWorkspaceSessionMessages(w http.ResponseWriter, 
 }
 
 // handlePutWorkspaceSession updates a session.
+//
+// The body is decoded as a [proto.Session] rather than a [session.Session]
+// because the domain type has no json tags: decoding into it binds only the
+// single-word fields and silently drops prompt_tokens, completion_tokens,
+// and summary_message_id, so a save that meant to change a title would zero
+// the usage counters as well.
 func (c *controllerV1) handlePutWorkspaceSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
-	var sess session.Session
-	if err := json.NewDecoder(r.Body).Decode(&sess); err != nil {
+	var args proto.Session
+	if err := json.NewDecoder(r.Body).Decode(&args); err != nil {
 		c.server.logError(r, "Failed to decode request", "error", err)
 		jsonError(w, http.StatusBadRequest, "failed to decode request")
 		return
 	}
 
-	saved, err := c.backend.SaveSession(r.Context(), id, sess)
+	saved, err := c.backend.SaveSession(r.Context(), id, sessionFromProto(args))
 	if err != nil {
 		c.handleError(w, r, err)
 		return

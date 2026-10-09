@@ -3,6 +3,7 @@ package apigen
 import (
 	"encoding/json"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -165,12 +166,106 @@ func TestSpecJSON(t *testing.T) {
 	text := string(data)
 
 	require.Contains(t, text, `"openapi": "3.2.1"`)
+	require.Contains(t, text, `"title": "Test API"`)
+	require.Contains(t, text, `"url": "/v1"`)
+	require.Contains(t, text, `"$ref": "#/components/schemas/sample"`)
+	require.Contains(t, text, `"$ref": "#/components/schemas/ErrorResponse"`)
 	require.Contains(t, text, `"/things"`)
 	require.Contains(t, text, `"/things/{id}/events"`)
 	require.Contains(t, text, `"text/event-stream"`)
 	require.Contains(t, text, `"application/json"`)
 	require.NotContains(t, text, "/v1/things\"") // base prefix stripped
 }
+
+// TestSchemaOfCompositeRoot guards the package the expansion is bounded
+// to when the value's root type is a slice or map rather than a struct:
+// []nested must expand nested, not collapse it to an opaque object.
+func TestSchemaOfCompositeRoot(t *testing.T) {
+	t.Parallel()
+
+	arr := SchemaOf([]nested{})
+	require.Equal(t, "array", arr.Type)
+	require.Equal(t, "object", arr.Items.Type)
+	require.Equal(t, "string", arr.Items.Properties["value"].Type)
+
+	m := SchemaOf(map[string]nested{})
+	require.Equal(t, "object", m.Type)
+	require.Equal(t, "object", m.AdditionalProperties.Type)
+	require.Equal(t, "string", m.AdditionalProperties.Properties["value"].Type)
+}
+
+// TestSpecJSONHoistsComponents checks that a shared shape is emitted once
+// into components.schemas and referenced, and that the array case
+// references the same component rather than inlining a copy.
+func TestSpecJSONHoistsComponents(t *testing.T) {
+	t.Parallel()
+	endpoints := []Endpoint{
+		Post("/v1/things").
+			Summary("Create thing").
+			Accepts(sample{}).
+			Responds([]sample{}).
+			Fails(400).
+			Handle(func(http.ResponseWriter, *http.Request) {}),
+	}
+
+	data, err := SpecJSON(Info{Title: "T", Version: "1"}, "/v1", endpoints)
+	require.NoError(t, err)
+
+	var doc struct {
+		Servers []struct {
+			URL string `json:"url"`
+		} `json:"servers"`
+		Components struct {
+			Schemas map[string]Schema `json:"schemas"`
+		} `json:"components"`
+		Paths map[string]map[string]struct {
+			RequestBody struct {
+				Content map[string]struct {
+					Schema Schema `json:"schema"`
+				} `json:"content"`
+			} `json:"requestBody"`
+			Responses map[string]struct {
+				Content map[string]struct {
+					Schema Schema `json:"schema"`
+				} `json:"content"`
+			} `json:"responses"`
+		} `json:"paths"`
+	}
+	require.NoError(t, json.Unmarshal(data, &doc))
+
+	require.Equal(t, "/v1", doc.Servers[0].URL)
+	require.Contains(t, doc.Components.Schemas, "sample")
+	require.Contains(t, doc.Components.Schemas, "nested")
+	require.Contains(t, doc.Components.Schemas, "ErrorResponse")
+
+	op := doc.Paths["/things"]["post"]
+	require.Equal(t, "#/components/schemas/sample",
+		op.RequestBody.Content["application/json"].Schema.Ref)
+
+	ok := op.Responses["200"].Content["application/json"].Schema
+	require.Equal(t, "array", ok.Type)
+	require.Equal(t, "#/components/schemas/sample", ok.Items.Ref)
+	require.Equal(t, "#/components/schemas/ErrorResponse",
+		op.Responses["400"].Content["application/json"].Schema.Ref)
+
+	// The sample body is emitted once, as a component, not inlined into
+	// the request and the response.
+	require.Equal(t, 1, strings.Count(string(data), `"sample":`))
+}
+
+// TestComponentRegistryNameCollision checks that two unrelated types with
+// the same name do not silently share a component: the second is
+// qualified with its package's last path segment.
+func TestComponentRegistryNameCollision(t *testing.T) {
+	t.Parallel()
+	reg := newComponentRegistry()
+
+	require.Equal(t, "Month", reg.nameFor(reflect.TypeFor[Month]()))
+	require.Equal(t, "time.Month", reg.nameFor(reflect.TypeFor[time.Month]()))
+}
+
+// Month exists only to collide with time.Month in the test above.
+type Month struct{ X int }
 
 func TestRenderDocs(t *testing.T) {
 	t.Parallel()

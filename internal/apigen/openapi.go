@@ -8,18 +8,34 @@ import (
 	"strings"
 )
 
-// Info carries the top-level API metadata for the OpenAPI document.
+// Info carries the top-level API metadata for the OpenAPI document. The
+// JSON tags matter: the OpenAPI Info object requires lowercase "title"
+// and "version" keys, so untagged fields would emit an invalid document.
 type Info struct {
-	Title       string
-	Version     string
-	Description string
+	Title       string `json:"title"`
+	Version     string `json:"version"`
+	Description string `json:"description,omitempty"`
 }
 
-// document is an OpenAPI 3.1 document rooted at the API's base path.
+// document is an OpenAPI 3.2 document rooted at the API's base path.
 type document struct {
-	OpenAPI string              `json:"openapi"`
-	Info    Info                `json:"info"`
-	Paths   map[string]pathItem `json:"paths"`
+	OpenAPI    string              `json:"openapi"`
+	Info       Info                `json:"info"`
+	Servers    []server            `json:"servers,omitempty"`
+	Paths      map[string]pathItem `json:"paths"`
+	Components *components         `json:"components,omitempty"`
+}
+
+// server records where the API is served, so a generated client targets
+// the base path the endpoint paths are relative to.
+type server struct {
+	URL string `json:"url"`
+}
+
+// components holds the reusable schemas the document references with
+// $ref, so a shape is emitted once instead of once per operation.
+type components struct {
+	Schemas map[string]*Schema `json:"schemas,omitempty"`
 }
 
 type pathItem map[string]operation
@@ -63,14 +79,19 @@ var errorSchema = &Schema{
 	Required: []string{"error"},
 }
 
-// SpecJSON renders the endpoints as an OpenAPI 3.1 JSON document. Base
+// SpecJSON renders the endpoints as an OpenAPI 3.2 JSON document. Base
 // is the API's base path (e.g. "/v1"); endpoint paths are relative to
-// it. The output is deterministic: map keys are sorted by
-// encoding/json.
+// it, and it is echoed in the document's servers so a generated client
+// targets the right URL. Named structs are hoisted into
+// components.schemas and referenced with $ref, so a shape appears once
+// rather than in every operation that carries it. The output is
+// deterministic: map keys are sorted by encoding/json.
 func SpecJSON(info Info, base string, endpoints []Endpoint) ([]byte, error) {
+	reg := newComponentRegistry()
 	doc := document{
 		OpenAPI: "3.2.1",
 		Info:    info,
+		Servers: []server{{URL: base}},
 		Paths:   map[string]pathItem{},
 	}
 	for _, e := range endpoints {
@@ -94,7 +115,7 @@ func SpecJSON(info Info, base string, endpoints []Endpoint) ([]byte, error) {
 			op.RequestBody = &requestBody{
 				Required: true,
 				Content: map[string]mediaType{
-					"application/json": {Schema: SchemaOf(e.request)},
+					"application/json": {Schema: reg.schemaOf(e.request)},
 				},
 			}
 		}
@@ -107,7 +128,7 @@ func SpecJSON(info Info, base string, endpoints []Endpoint) ([]byte, error) {
 			}
 		case e.response != nil:
 			ok.Content = map[string]mediaType{
-				"application/json": {Schema: SchemaOf(e.response)},
+				"application/json": {Schema: reg.schemaOf(e.response)},
 			}
 		}
 		op.Responses[strconv.Itoa(status)] = ok
@@ -115,7 +136,7 @@ func SpecJSON(info Info, base string, endpoints []Endpoint) ([]byte, error) {
 			op.Responses[strconv.Itoa(code)] = specResponse{
 				Description: http.StatusText(code),
 				Content: map[string]mediaType{
-					"application/json": {Schema: errorSchema},
+					"application/json": {Schema: reg.errorRef()},
 				},
 			}
 		}
@@ -126,6 +147,9 @@ func SpecJSON(info Info, base string, endpoints []Endpoint) ([]byte, error) {
 			doc.Paths[path] = item
 		}
 		item[strings.ToLower(e.method)] = op
+	}
+	if schemas := reg.schemas(); len(schemas) > 0 {
+		doc.Components = &components{Schemas: schemas}
 	}
 	return json.MarshalIndent(doc, "", "  ")
 }

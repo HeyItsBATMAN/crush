@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -88,12 +89,47 @@ func TestDocsEndpoints(t *testing.T) {
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
 	var spec struct {
-		OpenAPI string                                `json:"openapi"`
-		Paths   map[string]map[string]json.RawMessage `json:"paths"`
+		Info struct {
+			Title   string `json:"title"`
+			Version string `json:"version"`
+		} `json:"info"`
+		OpenAPI string `json:"openapi"`
+		Servers []struct {
+			URL string `json:"url"`
+		} `json:"servers"`
+		Paths      map[string]map[string]json.RawMessage `json:"paths"`
+		Components struct {
+			Schemas map[string]json.RawMessage `json:"schemas"`
+		} `json:"components"`
 	}
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&spec))
+	require.NoError(t, json.Unmarshal(body, &spec))
 	require.Equal(t, "3.2.1", spec.OpenAPI)
+	require.Equal(t, "Crush API", spec.Info.Title)
+	require.Equal(t, "1.0", spec.Info.Version)
+	require.Len(t, spec.Servers, 1)
+	require.Equal(t, apiBase, spec.Servers[0].URL)
+
+	// Shared shapes live in components, so a generated client gets named
+	// types instead of an anonymous object per operation.
+	require.Contains(t, spec.Components.Schemas, "Workspace")
+	require.Contains(t, spec.Components.Schemas, "Session")
+	require.Contains(t, spec.Components.Schemas, "ErrorResponse")
+
+	// Every $ref must resolve: a dangling reference is a spec a client
+	// cannot compile against.
+	var raw any
+	require.NoError(t, json.Unmarshal(body, &raw))
+	refs := collectRefs(raw)
+	require.NotEmpty(t, refs)
+	for _, ref := range refs {
+		name, ok := strings.CutPrefix(ref, "#/components/schemas/")
+		require.True(t, ok, "unexpected $ref form %q", ref)
+		require.Contains(t, spec.Components.Schemas, name, "dangling $ref %q", ref)
+	}
 
 	// One spec operation per registered endpoint (paths with multiple
 	// methods contribute one operation each).
@@ -107,4 +143,31 @@ func TestDocsEndpoints(t *testing.T) {
 		count++
 	}
 	require.Len(t, c.endpoints(), count)
+}
+
+// collectRefs returns every $ref string found anywhere in a decoded JSON
+// document.
+func collectRefs(v any) []string {
+	var refs []string
+	var walk func(any)
+	walk = func(v any) {
+		switch v := v.(type) {
+		case map[string]any:
+			for k, child := range v {
+				if k == "$ref" {
+					if s, ok := child.(string); ok {
+						refs = append(refs, s)
+					}
+					continue
+				}
+				walk(child)
+			}
+		case []any:
+			for _, child := range v {
+				walk(child)
+			}
+		}
+	}
+	walk(v)
+	return refs
 }

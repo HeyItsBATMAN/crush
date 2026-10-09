@@ -28,7 +28,7 @@ func (c *controllerV1) handleDocsIndex(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleDocsSpec serves the OpenAPI 3.1 specification as JSON.
+// handleDocsSpec serves the OpenAPI 3.2 specification as JSON.
 func (c *controllerV1) handleDocsSpec(w http.ResponseWriter, r *http.Request) {
 	data, err := apigen.SpecJSON(apiInfo, apiBase, c.endpoints())
 	if err != nil {

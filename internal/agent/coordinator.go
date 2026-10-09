@@ -119,6 +119,9 @@ func isOpenCodeResponsesModel(modelID string) bool {
 
 type Coordinator interface {
 	SetMainAgent(agentName string) error
+	// MainAgentName reports the config name of the current main agent so
+	// callers can display and restore it (e.g. "coder" or "plan").
+	MainAgentName() string
 	Run(ctx context.Context, sessionID, prompt string, attachments ...message.Attachment) (*fantasy.AgentResult, error)
 	// RunAccepted runs a call that was already accepted via
 	// BeginAccepted on the fire-and-forget dispatch path. The handle is
@@ -279,6 +282,12 @@ func (c *coordinator) activeAgent() (SessionAgent, string) {
 func (c *coordinator) currentAgent() SessionAgent {
 	agent, _ := c.activeAgent()
 	return agent
+}
+
+// MainAgentName reports the config name of the current main agent.
+func (c *coordinator) MainAgentName() string {
+	_, name := c.activeAgent()
+	return name
 }
 
 func (c *coordinator) SetMainAgent(agentName string) error {

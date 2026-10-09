@@ -68,6 +68,13 @@ func (c *blockingCoordinator) SetMainAgent(agentName string) error {
 	return c.setMainAgentErr
 }
 
+func (c *blockingCoordinator) MainAgentName() string {
+	if v, ok := c.lastMainAgentSet.Load().(string); ok {
+		return v
+	}
+	return ""
+}
+
 // insertAgentWorkspace installs a synthetic workspace with the given
 // coordinator (or none) and a workspace run context, mirroring the
 // fields CreateWorkspace initializes.
@@ -196,6 +203,20 @@ func TestSetMainAgent_Success(t *testing.T) {
 	err := b.SetMainAgent(ws.ID, "plan")
 	require.NoError(t, err)
 	require.Equal(t, "plan", coord.lastMainAgentSet.Load())
+}
+
+func TestGetAgentInfo_ReportsMainAgent(t *testing.T) {
+	t.Parallel()
+	b, _ := newTestBackend(t)
+	coord := newBlockingCoordinator()
+	ws := insertAgentWorkspace(t, b, coord)
+
+	require.NoError(t, b.SetMainAgent(ws.ID, "plan"))
+
+	info, err := b.GetAgentInfo(ws.ID)
+	require.NoError(t, err)
+	require.Equal(t, "plan", info.AgentID)
+	require.True(t, info.IsReady)
 }
 
 func TestSetMainAgent_RejectedWhileBusy(t *testing.T) {

@@ -118,6 +118,7 @@ type SkillReadResult struct {
 type AgentInfo struct {
 	IsBusy   bool                 `json:"is_busy"`
 	IsReady  bool                 `json:"is_ready"`
+	AgentID  string               `json:"agent_id"`
 	Model    catwalk.Model        `json:"model"`
 	ModelCfg config.SelectedModel `json:"model_cfg"`
 }

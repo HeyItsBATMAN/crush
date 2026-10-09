@@ -821,6 +821,17 @@ func TestCoordinatorSetMainAgent(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, config.AgentPlan, coord.mainAgentName)
 		assert.Same(t, plan, coord.mainAgent)
+		assert.Equal(t, config.AgentPlan, coord.MainAgentName())
+	})
+
+	t.Run("reports the initial main agent", func(t *testing.T) {
+		coord := &coordinator{
+			mainAgent:     &mockSessionAgent{},
+			mainAgentName: config.AgentCoder,
+			agents:        map[string]SessionAgent{config.AgentCoder: &mockSessionAgent{}},
+		}
+
+		assert.Equal(t, config.AgentCoder, coord.MainAgentName())
 	})
 
 	t.Run("returns error for unknown agent", func(t *testing.T) {

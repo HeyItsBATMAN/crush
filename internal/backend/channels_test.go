@@ -169,6 +169,7 @@ func (c *recordingCoordinator) Summarize(context.Context, string) error       { 
 func (c *recordingCoordinator) Model() agent.Model                            { return agent.Model{} }
 func (c *recordingCoordinator) UpdateModels(context.Context) error            { return nil }
 func (c *recordingCoordinator) SetMainAgent(string) error                     { return nil }
+func (c *recordingCoordinator) MainAgentName() string                         { return "" }
 func (c *recordingCoordinator) GenerateTitle(context.Context, string, string) {}
 
 // fullFakeSessions adapts fakeChannelSessions to the full session.Service

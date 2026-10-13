@@ -29,6 +29,19 @@ func TestInteractiveFlagAvailableOnRunCmd(t *testing.T) {
 	}
 }
 
+// TestYoloFlagAvailableOnRunCmd guards the --yolo flag on `crush run`, which
+// lets both interaction modes auto-accept permission requests. Without it,
+// `crush run --yolo` fails with "unknown flag" because runCmd does not inherit
+// the root command's local flags.
+func TestYoloFlagAvailableOnRunCmd(t *testing.T) {
+	t.Parallel()
+
+	flag := runCmd.Flags().Lookup("yolo")
+	require.NotNil(t, flag, "the --yolo flag must be registered on runCmd")
+	require.Equal(t, "bool", flag.Value.Type())
+	require.Equal(t, "y", flag.Shorthand)
+}
+
 // cobraFlagMutuallyExclusiveAnnotation is the annotation key cobra sets on
 // flags registered via MarkFlagsMutuallyExclusive. Kept as a local constant so
 // the test does not depend on cobra's (unexported) symbol.

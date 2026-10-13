@@ -44,6 +44,9 @@ crush run "Guess my 5 favorite Pokémon"
 # Open the interactive UI with a predefined prompt
 crush run --interactive "Explain this codebase to me"
 
+# Open the interactive UI and auto-accept all permission requests
+crush run --interactive --yolo "Refactor the parser"
+
 # Pipe input from stdin
 curl https://charm.land | crush run "Summarize this website"
 
@@ -186,6 +189,7 @@ func init() {
 	runCmd.Flags().String("reasoning-effort", "", "Reasoning effort for the model (e.g. low, medium, high). Levels depend on the model; unsupported values are rejected with the accepted values listed")
 	runCmd.Flags().StringP("session", "s", "", "Continue a previous session by ID")
 	runCmd.Flags().BoolP("continue", "C", false, "Continue the most recent session")
+	runCmd.Flags().BoolP("yolo", "y", false, "Automatically accept all permissions (dangerous mode)")
 	runCmd.Flags().BoolP("interactive", "i", false, "Open an interactive session seeded with the prompt instead of running non-interactively")
 	runCmd.MarkFlagsMutuallyExclusive("session", "continue")
 	runCmd.MarkFlagsMutuallyExclusive("interactive", "quiet")

@@ -128,31 +128,39 @@ crush --continue
 
 		event.AppInitialized()
 
-		com := common.DefaultCommon(ws)
-		model := ui.New(com, sessionID, continueLast)
-
-		inputFilter := ui.NewFilter()
-		var env uv.Environ = os.Environ()
-		program := tea.NewProgram(
-			model,
-			tea.WithEnvironment(env),
-			tea.WithContext(cmd.Context()),
-			tea.WithFilter(inputFilter.Filter),
-		)
-		go ws.Subscribe(program)
-
-		if _, err := program.Run(); err != nil {
-			event.Error(err)
-			slog.Error("TUI run error", "error", err)
-			return errors.New("Crush crashed. If metrics are enabled, we were notified about it. If you'd like to report it, please copy the stacktrace above and open an issue at https://github.com/charmbracelet/crush/issues/new?template=bug.yml") //nolint:staticcheck
-		}
-		var banner config.ExitBanner
-		if cfg := com.Config(); cfg != nil {
-			banner = cfg.Options.TUI.ExitBanner
-		}
-		printSessionResume(model, banner)
-		return nil
+		return runInteractiveTUI(cmd, ws, sessionID, continueLast, "")
 	},
+}
+
+// runInteractiveTUI launches the interactive TUI against ws and blocks until
+// it exits. When initialPrompt is non-empty it is submitted as soon as the UI
+// is ready, which is how `crush run --interactive` seeds a predefined prompt
+// into an otherwise normal interactive session.
+func runInteractiveTUI(cmd *cobra.Command, ws workspace.Workspace, sessionID string, continueLast bool, initialPrompt string) error {
+	com := common.DefaultCommon(ws)
+	model := ui.New(com, sessionID, continueLast, initialPrompt)
+
+	inputFilter := ui.NewFilter()
+	var env uv.Environ = os.Environ()
+	program := tea.NewProgram(
+		model,
+		tea.WithEnvironment(env),
+		tea.WithContext(cmd.Context()),
+		tea.WithFilter(inputFilter.Filter),
+	)
+	go ws.Subscribe(program)
+
+	if _, err := program.Run(); err != nil {
+		event.Error(err)
+		slog.Error("TUI run error", "error", err)
+		return errors.New("Crush crashed. If metrics are enabled, we were notified about it. If you'd like to report it, please copy the stacktrace above and open an issue at https://github.com/charmbracelet/crush/issues/new?template=bug.yml") //nolint:staticcheck
+	}
+	var banner config.ExitBanner
+	if cfg := com.Config(); cfg != nil {
+		banner = cfg.Options.TUI.ExitBanner
+	}
+	printSessionResume(model, banner)
+	return nil
 }
 
 var heartbit = lipgloss.NewStyle().Foreground(charmtone.Dolly).SetString(`

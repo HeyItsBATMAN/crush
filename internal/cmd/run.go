@@ -33,10 +33,16 @@ var runCmd = &cobra.Command{
 	Use:     "run [prompt...]",
 	Short:   "Run a single non-interactive prompt",
 	Long: `Run a single prompt in non-interactive mode and exit.
-The prompt can be provided as arguments or piped from stdin.`,
+The prompt can be provided as arguments or piped from stdin.
+
+With --interactive, Crush opens the full interactive UI seeded with the
+prompt instead of exiting after one turn.`,
 	Example: `
 # Run a simple prompt
 crush run "Guess my 5 favorite Pokémon"
+
+# Open the interactive UI with a predefined prompt
+crush run --interactive "Explain this codebase to me"
 
 # Pipe input from stdin
 curl https://charm.land | crush run "Summarize this website"
@@ -74,13 +80,21 @@ crush run --continue "Follow up on your last response"
 			reasoningEffort, _ = cmd.Flags().GetString("reasoning-effort")
 			sessionID, _       = cmd.Flags().GetString("session")
 			useLast, _         = cmd.Flags().GetBool("continue")
+			interactive, _     = cmd.Flags().GetBool("interactive")
 		)
+
+		prompt := strings.Join(args, " ")
+
+		if interactive {
+			if largeModel != "" || smallModel != "" || reasoningEffort != "" {
+				return fmt.Errorf("--model, --small-model and --reasoning-effort are not supported with --interactive")
+			}
+			return runInteractive(cmd, prompt)
+		}
 
 		// Cancel on SIGINT or SIGTERM.
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, os.Kill)
 		defer cancel()
-
-		prompt := strings.Join(args, " ")
 
 		prompt, err := MaybePrependStdin(prompt)
 		if err != nil {
@@ -172,7 +186,33 @@ func init() {
 	runCmd.Flags().String("reasoning-effort", "", "Reasoning effort for the model (e.g. low, medium, high). Levels depend on the model; unsupported values are rejected with the accepted values listed")
 	runCmd.Flags().StringP("session", "s", "", "Continue a previous session by ID")
 	runCmd.Flags().BoolP("continue", "C", false, "Continue the most recent session")
+	runCmd.Flags().BoolP("interactive", "i", false, "Open an interactive session seeded with the prompt instead of running non-interactively")
 	runCmd.MarkFlagsMutuallyExclusive("session", "continue")
+	runCmd.MarkFlagsMutuallyExclusive("interactive", "quiet")
+	runCmd.MarkFlagsMutuallyExclusive("interactive", "verbose")
+	runCmd.MarkFlagsMutuallyExclusive("interactive", "session")
+	runCmd.MarkFlagsMutuallyExclusive("interactive", "continue")
+}
+
+// runInteractive opens the interactive TUI seeded with prompt, backing
+// `crush run --interactive`. It mirrors the root command's setup so both local
+// and client/server modes work, and the prompt is submitted once the UI is
+// ready. Unlike the non-interactive path it does not read stdin: the TUI needs
+// the terminal, so the prompt must come from the command arguments.
+func runInteractive(cmd *cobra.Command, prompt string) error {
+	ws, cleanup, err := setupWorkspaceWithProgressBar(cmd)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	if !ws.Config().IsConfigured() {
+		return fmt.Errorf("no providers configured - please run 'crush' to set up a provider interactively")
+	}
+
+	event.AppInitialized()
+
+	return runInteractiveTUI(cmd, ws, "", false, prompt)
 }
 
 // runNonInteractive executes the agent via the server and streams output

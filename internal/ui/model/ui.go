@@ -225,6 +225,10 @@ type UI struct {
 	initialSessionID string
 	// continueLastSession is set to continue the most recent session on startup.
 	continueLastSession bool
+	// initialPrompt, when non-empty, is submitted as soon as the UI is ready.
+	// It backs `crush run --interactive`, which opens a normal interactive
+	// session seeded with a predefined prompt.
+	initialPrompt string
 
 	lastUserMessageTime int64
 
@@ -492,7 +496,7 @@ type UI struct {
 }
 
 // New creates a new instance of the [UI] model.
-func New(com *common.Common, initialSessionID string, continueLast bool) *UI {
+func New(com *common.Common, initialSessionID string, continueLast bool, initialPrompt string) *UI {
 	// Editor components
 	ta := textarea.New()
 	ta.SetStyles(com.Styles.Editor.Textarea)
@@ -563,6 +567,7 @@ func New(com *common.Common, initialSessionID string, continueLast bool) *UI {
 		notifyWindowFocused: true,
 		initialSessionID:    initialSessionID,
 		continueLastSession: continueLast,
+		initialPrompt:       initialPrompt,
 		skillStates:         skills.GetLatestStates(),
 	}
 
@@ -679,7 +684,27 @@ func (m *UI) Init() tea.Cmd {
 	if cmd := m.requestMCPRefresh(); cmd != nil {
 		cmds = append(cmds, cmd)
 	}
+	// Submit a predefined prompt once the UI is up, if one was supplied on
+	// startup (e.g. `crush run --interactive "..."`).
+	if cmd := m.initialPromptCmd(); cmd != nil {
+		cmds = append(cmds, cmd)
+	}
 	return tea.Batch(cmds...)
+}
+
+// initialPromptCmd returns a command that submits the startup prompt supplied
+// via `crush run --interactive`, or nil when there is none or the workspace is
+// unconfigured. Routing the prompt through the Update loop keeps it on the
+// Update goroutine, exactly like a typed message, and sendMessage creates a
+// session when there is none yet. It is skipped while unconfigured because the
+// TUI would be in onboarding with no agent to run the prompt.
+func (m *UI) initialPromptCmd() tea.Cmd {
+	if m.initialPrompt == "" || !m.com.Config().IsConfigured() {
+		return nil
+	}
+	prompt := m.initialPrompt
+	m.initialPrompt = ""
+	return util.CmdHandler(sendMessageMsg{Content: prompt})
 }
 
 // loadInitialSession loads the initial session if one was specified on startup.

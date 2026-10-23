@@ -16,7 +16,7 @@ need to author correct hooks.
 
 ## Supported Events
 
-Two events are currently supported. Event names are case-insensitive and
+Three events are currently supported. Event names are case-insensitive and
 accept snake_case (`PreToolUse`, `pretooluse`, `pre_tool_use` all work).
 
 - **`PreToolUse`** — fires before a top-level tool call. Can block, allow,
@@ -27,6 +27,12 @@ accept snake_case (`PreToolUse`, `pretooluse`, `pre_tool_use` all work).
   and `updated_input` are ignored. Use it for side effects such as
   notifications, sounds, logging, or kicking off a build. `Stop` has no tool
   to match, so `matcher` is ignored and every configured `Stop` hook runs.
+- **`SessionStart`** — fires once, exactly after a new session's first user
+  message is recorded and before the model responds. It is the place to
+  inject session-long context. On exit 0, plain-text stdout is injected
+  verbatim and a JSON envelope contributes its `context` field; empty output
+  injects nothing. `matcher` is ignored and every configured `SessionStart`
+  hook runs.
 
 ## Configuration
 
@@ -232,13 +238,15 @@ ignored.
 
 1. Add `#!/usr/bin/env bash` and `set -euo pipefail` (for shell scripts).
 2. `chmod +x` the script.
-3. Add the entry under `hooks.PreToolUse` (with a matcher) or `hooks.Stop`
-   (no matcher) in `crush.json`.
+3. Add the entry under `hooks.PreToolUse` (with a matcher) or
+   `hooks.Stop`/`hooks.SessionStart` (no matcher) in `crush.json`.
 4. For `PreToolUse`, decide intent: inject context (omit `decision`),
    auto-approve (`"allow"`), block (`exit 2`), or halt (`exit 49`).
 5. For `Stop`, do side effects only — output is ignored because the turn has
    already ended.
-6. If rewriting input, remember `updated_input` is a shallow merge — only
+6. For `SessionStart`, print the context to inject as plain text (or emit
+   `context` via the JSON envelope); empty output injects nothing.
+7. If rewriting input, remember `updated_input` is a shallow merge — only
    include the keys you want to change.
 
 ## Debugging
@@ -246,9 +254,10 @@ ignored.
 - Timeouts kill the hook silently and the tool call proceeds. Bump `timeout` if needed.
 - Non-zero exit codes other than 2/49 are logged but don't block — check Crush logs.
 - `Stop` hooks ignore exit 2/49 and their stdout: there is nothing left to block.
+- `SessionStart` ignores exit 2/49 as well; only its stdout/context matters.
 - Use `echo "debug info" >&2` for logging without corrupting stdout JSON.
 - `matcher` is a regex against the tool name. Use `^bash$` (not `bash`) if you
-  don't also want to match `mcp_something_bash`. It is ignored for `Stop`.
+  don't also want to match `mcp_something_bash`. It is ignored for `Stop` and `SessionStart`.
 
 ## Claude Code Compatibility
 

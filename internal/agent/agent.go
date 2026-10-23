@@ -175,6 +175,10 @@ type SessionAgent interface {
 	// to disable Stop hooks (the coordinator rebuilds this from config
 	// whenever the agent's tools are rebuilt).
 	SetStopHooks(runner *hooks.Runner)
+	// SetSessionStartHooks replaces the runner used for the SessionStart
+	// event. Pass nil to disable SessionStart hooks (the coordinator
+	// rebuilds this from config whenever the agent's tools are rebuilt).
+	SetSessionStartHooks(runner *hooks.Runner)
 	Cancel(sessionID string)
 	CancelAll()
 	IsSessionBusy(sessionID string) bool
@@ -228,11 +232,15 @@ type sessionAgent struct {
 	runComplete          pubsub.Publisher[notify.RunComplete]
 	// stopHooks runs the configured Stop hooks at the end of each
 	// top-level turn. Nil when none are configured or when this agent is
-	// a sub-agent, and Stop hooks never fire for sub-agents. Guarded by
-	// stopHooksMu because SetStopHooks can run on a config-change
-	// goroutine while a turn is finishing.
-	stopHooksMu sync.RWMutex
-	stopHooks   *hooks.Runner
+	// a sub-agent, and Stop hooks never fire for sub-agents.
+	// sessionStartHooks runs the configured SessionStart hooks just after
+	// the first user message of a new session; its context is injected
+	// into that turn. Nil when none are configured or for sub-agents.
+	// Both are guarded by stopHooksMu because the setters can run on a
+	// config-change goroutine while a turn finishes or starts.
+	stopHooksMu       sync.RWMutex
+	stopHooks         *hooks.Runner
+	sessionStartHooks *hooks.Runner
 
 	messageQueue   *csync.Map[string, []SessionAgentCall]
 	activeRequests *csync.Map[string, *activeCancel]
@@ -293,6 +301,9 @@ type SessionAgentOptions struct {
 	// StopHooks runs the Stop hooks for this agent. Ignored for
 	// sub-agents, which never fire hooks.
 	StopHooks *hooks.Runner
+	// SessionStartHooks runs the SessionStart hooks for this agent.
+	// Ignored for sub-agents, which never fire hooks.
+	SessionStartHooks *hooks.Runner
 }
 
 func NewSessionAgent(
@@ -312,6 +323,7 @@ func NewSessionAgent(
 		notify:               opts.Notify,
 		runComplete:          opts.RunComplete,
 		stopHooks:            opts.StopHooks,
+		sessionStartHooks:    opts.SessionStartHooks,
 		messageQueue:         csync.NewMap[string, []SessionAgentCall](),
 		activeRequests:       csync.NewMap[string, *activeCancel](),
 		dispatchMu:           csync.NewMap[string, *sync.Mutex](),
@@ -631,6 +643,48 @@ func (a *sessionAgent) fireStopHooks(ctx context.Context, sessionID, sessionTitl
 	slog.Info("Stop hooks completed", "session_id", sessionID, "hooks", result.HookCount)
 }
 
+// fireSessionStartHooks runs the configured SessionStart hooks for the
+// first turn of a new session and returns the context to inject, or an
+// empty string when no hooks produced any. Errors are logged and never
+// surfaced to the caller.
+func (a *sessionAgent) fireSessionStartHooks(ctx context.Context, sessionID string) string {
+	runner := a.sessionStartHookRunner()
+	if runner == nil || a.isSubAgent {
+		return ""
+	}
+	result, err := runner.RunSessionStart(ctx, sessionID)
+	if err != nil {
+		slog.Warn("Failed to run SessionStart hooks", "session_id", sessionID, "error", err)
+		return ""
+	}
+	if result.HookCount == 0 || result.Context == "" {
+		return ""
+	}
+	slog.Info("SessionStart hooks completed", "session_id", sessionID, "hooks", result.HookCount)
+	// Persist the context as a hidden user message so later turns keep
+	// it in the model's history without showing it in the UI. A failure
+	// only affects future turns; the current turn still injects it.
+	if a.messages != nil {
+		if err := a.persistSessionStartContext(ctx, sessionID, result.Context); err != nil {
+			slog.Warn("Failed to persist SessionStart hook context", "session_id", sessionID, "error", err)
+		}
+	}
+	return result.Context
+}
+
+// persistSessionStartContext saves hook-returned context as a hidden user
+// message, placed after the session's first user message.
+func (a *sessionAgent) persistSessionStartContext(ctx context.Context, sessionID, text string) error {
+	_, err := a.messages.Create(ctx, sessionID, message.CreateMessageParams{
+		Role:  message.User,
+		Parts: []message.ContentPart{message.TextContent{Text: text, Hidden: true}},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create SessionStart context message: %w", err)
+	}
+	return nil
+}
+
 // ValidateCall performs the cheap structural validation that
 // sessionAgent.Run requires before a call can be dispatched: a call must
 // carry either a non-empty prompt or a text attachment, and it must name a
@@ -848,11 +902,16 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		return nil, fmt.Errorf("failed to get session messages: %w", err)
 	}
 
+	// Remember whether this run carries the session's first real
+	// (non-shell) user prompt: it decides both title generation and
+	// whether the SessionStart hooks fire.
+	isFirstUserMessage := !hasUserTextMessage(msgs)
+
 	// Generate title from the first real (non-shell) user prompt.
 	// can take tens of seconds. Blocking Run on it delays the
 	// response to the caller. Use a detached context so the title
 	// goroutine survives Run's cancel.
-	if !hasUserTextMessage(msgs) {
+	if isFirstUserMessage {
 		titleCtx := context.WithoutCancel(ctx)
 		go a.GenerateTitle(titleCtx, call.SessionID, call.Prompt)
 	}
@@ -863,6 +922,15 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		return nil, err
 	}
 	userMsgCreated = true
+
+	// Fire SessionStart hooks precisely once, when this run carries the
+	// session's first user message, right after it was created (sub-agents
+	// never fire hooks). Returned context is injected into this turn
+	// directly after the user message, and empty output injects nothing.
+	var sessionStartContext string
+	if isFirstUserMessage {
+		sessionStartContext = a.fireSessionStartHooks(ctx, call.SessionID)
+	}
 
 	// Add the session to the context. The run context (genCtx) and its
 	// cancel func were already created and registered under the dispatch
@@ -917,6 +985,14 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 				callContext,
 				filterToolsForChannel(a.tools.Copy(), call.Channel, mcp.GetStates()),
 			)
+
+			// SessionStart hook context opens a brand-new session's turn,
+			// directly after the first user message: the prompt is the
+			// last message Fantasy passes in at step zero. Later turns
+			// load the persisted copy from session history instead.
+			if sessionStartContext != "" && options.StepNumber == 0 {
+				prepared.Messages = append(prepared.Messages, fantasy.NewUserMessage(sessionStartContext))
+			}
 
 			// Drain queued follow-up prompts for this step. Calls covered
 			// by a cancel recorded while they sat in the queue are dropped:
@@ -2207,6 +2283,22 @@ func (a *sessionAgent) stopHookRunner() *hooks.Runner {
 	a.stopHooksMu.RLock()
 	defer a.stopHooksMu.RUnlock()
 	return a.stopHooks
+}
+
+// SetSessionStartHooks replaces the SessionStart event runner. Safe to
+// call at any time; a nil runner disables SessionStart hooks.
+func (a *sessionAgent) SetSessionStartHooks(runner *hooks.Runner) {
+	a.stopHooksMu.Lock()
+	defer a.stopHooksMu.Unlock()
+	a.sessionStartHooks = runner
+}
+
+// sessionStartHookRunner returns the current SessionStart hooks runner,
+// if any.
+func (a *sessionAgent) sessionStartHookRunner() *hooks.Runner {
+	a.stopHooksMu.RLock()
+	defer a.stopHooksMu.RUnlock()
+	return a.sessionStartHooks
 }
 
 func (a *sessionAgent) SetSystemPrompt(systemPrompt string) {

@@ -834,6 +834,7 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 		Notify:               c.notify,
 		RunComplete:          c.runComplete,
 		StopHooks:            c.stopHooksFor(isSubAgent),
+		SessionStartHooks:    c.sessionStartHooksFor(isSubAgent),
 	})
 
 	// The readiness goroutines below perform one-time setup — building the
@@ -880,6 +881,19 @@ func (c *coordinator) stopHooksFor(isSubAgent bool) *hooks.Runner {
 		return nil
 	}
 	return hooks.NewRunner(stopCfgs, c.cfg.WorkingDir(), c.cfg.WorkingDir())
+}
+
+// sessionStartHooksFor builds the SessionStart hooks runner from the
+// current config. Sub-agents never fire hooks, so they get no runner.
+func (c *coordinator) sessionStartHooksFor(isSubAgent bool) *hooks.Runner {
+	if isSubAgent {
+		return nil
+	}
+	cfgs := c.cfg.Config().Hooks[hooks.EventSessionStart]
+	if len(cfgs) == 0 {
+		return nil
+	}
+	return hooks.NewRunner(cfgs, c.cfg.WorkingDir(), c.cfg.WorkingDir())
 }
 
 func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, isSubAgent bool) ([]fantasy.AgentTool, error) {
@@ -1473,10 +1487,12 @@ func (c *coordinator) updateAgentModels(ctx context.Context, agent SessionAgent,
 	}
 	agent.SetTools(tools)
 
-	// Refresh the Stop hooks alongside the tools. buildTools only rebuilds
-	// the PreToolUse runner, so without this a Stop hook added to config
-	// after startup would never take effect on a live agent.
+	// Refresh the Stop and SessionStart hooks alongside the tools.
+	// buildTools only rebuilds the PreToolUse runner, so without this a
+	// hook added to config after startup would never take effect on a
+	// live agent.
 	agent.SetStopHooks(c.stopHooksFor(false))
+	agent.SetSessionStartHooks(c.sessionStartHooksFor(false))
 	return nil
 }
 

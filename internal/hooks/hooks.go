@@ -21,6 +21,12 @@ const (
 	// Stop hooks are observational: their decisions cannot block or alter
 	// anything.
 	EventStop = "Stop"
+	// EventSessionStart fires once, just after the first user message of
+	// a new session is created and before the model responds. Context the
+	// hooks return (plain-text stdout or the `context` field of a JSON
+	// envelope) is injected into the turn, directly after the user
+	// message. Empty output injects nothing.
+	EventSessionStart = "SessionStart"
 )
 
 // HaltExitCode is the exit code that halts the whole turn. 2 blocks the

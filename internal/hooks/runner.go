@@ -122,6 +122,27 @@ func (r *Runner) RunStop(ctx context.Context, sessionID, sessionTitle, message s
 	}, all)
 }
 
+// RunSessionStart executes the SessionStart hooks for the first turn of a
+// new session, which has just received its first user message.
+//
+// Matchers are ignored for SessionStart: there is no tool name to test
+// against, so every configured SessionStart hook runs. Only context is
+// meaningful here: plain-text stdout and `context` output are aggregated
+// and injected into the turn right after the user message. Decisions,
+// halt, and updated_input are parsed but ignored.
+func (r *Runner) RunSessionStart(ctx context.Context, sessionID string) (AggregateResult, error) {
+	all := make([]config.HookConfig, 0, len(r.hooks))
+	for _, h := range r.hooks {
+		all = append(all, h.cfg)
+	}
+	return r.run(ctx, EventInput{
+		EventName:  EventSessionStart,
+		SessionID:  sessionID,
+		CWD:        r.cwd,
+		ProjectDir: r.projectDir,
+	}, all)
+}
+
 // run executes the given hooks in parallel and returns their aggregated
 // result. in supplies the event payload and environment.
 func (r *Runner) run(ctx context.Context, in EventInput, matching []config.HookConfig) (AggregateResult, error) {
@@ -150,7 +171,7 @@ func (r *Runner) run(ctx context.Context, in EventInput, matching []config.HookC
 	for i, h := range deduped {
 		go func(idx int, hook config.HookConfig) {
 			defer wg.Done()
-			results[idx] = r.runOne(ctx, hook, envVars, payload)
+			results[idx] = r.runOne(ctx, hook, in.EventName, envVars, payload)
 		}(i, h)
 	}
 	wg.Wait()
@@ -207,7 +228,7 @@ func (r *Runner) matchingHooks(toolName string) []config.HookConfig {
 //     outer frame reads them;
 //   - on the abandon path, the goroutine may still be writing and the
 //     outer frame must not touch them again.
-func (r *Runner) runOne(parentCtx context.Context, hook config.HookConfig, envVars []string, payload []byte) HookResult {
+func (r *Runner) runOne(parentCtx context.Context, hook config.HookConfig, eventName string, envVars []string, payload []byte) HookResult {
 	timeout := hook.TimeoutDuration()
 	ctx, cancel := context.WithTimeout(parentCtx, timeout)
 	defer cancel()
@@ -292,11 +313,14 @@ func (r *Runner) runOne(parentCtx context.Context, hook config.HookConfig, envVa
 		}
 	}
 
-	// Exit code 0 — parse stdout JSON.
-	result := parseStdout(stdout.String())
+	// Exit code 0 — parse stdout. SessionStart hooks may print plain text
+	// on stdout, which is injected verbatim as context (mirroring Claude
+	// Code); other events ignore non-JSON stdout like Claude Code does.
+	result := parseStdout(stdout.String(), eventName == EventSessionStart)
 	slog.Debug(
 		"Hook executed",
 		"command", hook.Command,
+		"event", eventName,
 		"decision", result.Decision.String(),
 	)
 	return result

@@ -1386,6 +1386,8 @@ func normalizeHookEvent(name string) string {
 		return "PreToolUse"
 	case "stop":
 		return "Stop"
+	case "sessionstart":
+		return "SessionStart"
 	default:
 		return name
 	}

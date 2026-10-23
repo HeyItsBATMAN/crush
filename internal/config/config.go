@@ -811,15 +811,16 @@ func (t ToolGlob) GetTimeout() time.Duration {
 }
 
 // HookConfig defines a user-configured shell command that fires on a hook
-// event (e.g. PreToolUse, Stop). This is a pure-data struct: matcher
-// compilation is owned by hooks.Runner so a JSON round-trip, merge, or
-// reload can't silently drop compiled state.
+// event (e.g. PreToolUse, Stop, SessionStart). This is a pure-data struct:
+// matcher compilation is owned by hooks.Runner so a JSON round-trip,
+// merge, or reload can't silently drop compiled state.
 type HookConfig struct {
 	// Friendly display name shown in the TUI. Falls back to Command when empty.
 	Name string `json:"name,omitempty" jsonschema:"description=Friendly display name shown in the TUI for this hook"`
 	// Regex pattern tested against the tool name. Empty means match all.
-	// Ignored for events that aren't tool calls (e.g. Stop).
-	Matcher string `json:"matcher,omitempty" jsonschema:"description=Regex pattern tested against the tool name. Empty means match all tools. Ignored for non-tool events such as Stop."`
+	// Ignored for events that aren't tool calls (e.g. Stop,
+	// SessionStart).
+	Matcher string `json:"matcher,omitempty" jsonschema:"description=Regex pattern tested against the tool name. Empty means match all tools. Ignored for non-tool events such as Stop or SessionStart."`
 	// Shell command to execute.
 	Command string `json:"command" jsonschema:"required,description=Shell command to execute when the hook fires"`
 	// Timeout in seconds. Default 30.
@@ -867,7 +868,7 @@ type Config struct {
 
 	Tools Tools `json:"tools,omitzero" jsonschema:"description=Tool configurations"`
 
-	Hooks map[string][]HookConfig `json:"hooks,omitempty" jsonschema:"description=User-defined shell commands that fire on hook events (e.g. PreToolUse and Stop)"`
+	Hooks map[string][]HookConfig `json:"hooks,omitempty" jsonschema:"description=User-defined shell commands that fire on hook events (e.g. PreToolUse/Stop/SessionStart)"`
 
 	// Env is a map of environment variables set on startup.
 	Env map[string]string `json:"env,omitempty" jsonschema:"description=Environment variables to set on startup"`

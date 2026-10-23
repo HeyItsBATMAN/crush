@@ -212,9 +212,10 @@ option ui exit-banner compact
 
 ## Hooks runtime
 
-Hooks are user-defined shell commands that fire on agent events. Two events are
-currently supported: `PreToolUse`, which runs before a tool executes, and
-`Stop`, which runs once per top-level turn after the agent finishes responding.
+Hooks are user-defined shell commands that fire on agent events. Three events are
+currently supported: `PreToolUse`, which runs before a tool executes; `Stop`,
+which runs once per top-level turn after the agent finishes responding; and
+`SessionStart`, which runs once after a new session's first user message.
 This behavior is the same however the hook is defined (`hook add` or JSON).
 
 ### How hooks work
@@ -223,12 +224,17 @@ This behavior is the same however the hook is defined (`hook add` or JSON).
    `matcher` (or no matcher) run in parallel.
 2. When a top-level turn ends, all `Stop` hooks run in parallel. `Stop` has no
    tool to match, so `matcher` is ignored and every `Stop` hook runs.
-3. Duplicate commands are deduplicated — each unique command runs at most once.
-4. The hook receives JSON on **stdin** and hook-specific **environment
+3. When a new session records its first user message, all `SessionStart` hooks
+   run in parallel. `matcher` is ignored and every `SessionStart` hook runs.
+   Their plain-text stdout (or JSON `context`) is injected into the turn right
+   after the user message; empty output injects nothing.
+4. Duplicate commands are deduplicated — each unique command runs at most once.
+5. The hook receives JSON on **stdin** and hook-specific **environment
    variables**.
 
 Event names are case-insensitive and accept snake_case: `PreToolUse`,
-`pretooluse`, `pre_tool_use`, `PRE_TOOL_USE`, `Stop`, and `STOP` all work.
+`pretooluse`, `pre_tool_use`, `PRE_TOOL_USE`, `Stop`, `STOP`, `SessionStart`,
+and `session_start` all work.
 
 > `Stop` hooks are observational: the turn is already over, so `decision`,
 > `halt`, `context`, and `updated_input` are ignored. Use them for side effects

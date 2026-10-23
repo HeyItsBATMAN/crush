@@ -19,8 +19,9 @@ forward.
 - Hooks are Claude Code-compatible
 - Crush ships with a builtin `crush-hook` skill to write, edit, and configure
   hooks; just tell Crush how to configure Crush
-- Crush currently supports two hooks, `PreToolUse` and `Stop`, with plans to
-  support the full gamut; please let us know which hooks you'd like to see next
+- Crush currently supports three hooks: `PreToolUse`, `Stop`, and
+  `SessionStart`, with plans to support the full gamut; please let us know
+  which hooks you'd like to see next
 - Hooks run in parallel for speed, but their results compose in config order
   for determinism
 
@@ -162,7 +163,7 @@ wins when rewriting input, but first deny wins when blocking.
 
 ## Events
 
-Here are the events you can hook into (spoiler: there are currently two).
+Here are the events you can hook into (spoiler: there are currently three).
 
 Hooks are keyed by event name. Only `command` is required, and you can omit
 `matcher` to match all tools.
@@ -230,12 +231,55 @@ set -euo pipefail
 notify-send "Crush finished" "$CRUSH_SESSION_TITLE"
 ```
 
+### SessionStart
+
+This hook fires once, exactly when a session's first user message has just
+been recorded and before the model responds to it. Use it to seed the agent
+with context it should have for the whole session: project conventions,
+issue-tracker primers, environment summaries, and so on.
+
+**Matched against**: nothing. There's no tool call to match on, so `matcher`
+is ignored and every configured `SessionStart` hook runs.
+
+> [!NOTE]
+> Event names are case insensitive and snake-caseable, so `SessionStart`,
+> `sessionstart`, and `session_start` all work.
+
+**Scope**: `SessionStart` fires on the **top-level agent** only. Sub-agents
+(the `agent` task tool, `agentic_fetch`, etc.) never fire hooks.
+
+**Injecting context**: this is the one event where stdout flows into the
+model. On exit 0, plain-text stdout is injected verbatim, and a JSON envelope
+contributes its `context` field; multiple hooks compose in config order with
+newlines. Empty output injects nothing. The injected text is added to the
+turn directly after the user message and stays in the model's history for
+the rest of the session without cluttering the transcript UI. Other output
+fields (`decision`, `halt`, `updated_input`, `reason`) are ignored.
+
+```jsonc
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "command": "bd prime",
+      },
+    ],
+  },
+}
+```
+
+With [beads](https://github.com/steveyegge/beads) initialized, `bd prime`
+prints the project's issue-tracker conventions, which are injected into the
+agent's first turn. Uninitialized projects print nothing, so nothing is
+injected.
+
 ## Building Hooks
 
 When a hook fires, Crush:
 
 1. Filters hooks whose `matcher` regex matches the tool name (no matcher = match
-   all). Events with no tool to match, like `Stop`, skip this step.
+   all). Events with no tool to match, like `Stop` and `SessionStart`, skip
+   this step.
 2. Deduplicates by `command` (identical commands run once).
 3. Runs all matching hooks **in parallel** through Crush's embedded POSIX
    shell (see [Execution model](#execution-model)).
@@ -247,6 +291,8 @@ When a hook fires, Crush:
    permission prompt for it. If it's `allow`, Crush treats that as affirmative
    pre-approval and also skips the prompt. Silence (no decision) falls through
    to the normal permission flow. `Stop` has nothing to apply the result to.
+   For `SessionStart`, the aggregated `context` is injected into the turn
+   right after the user message.
 
 Note that you can omit `matcher` and match in your shell script instead,
 however you'll incur some additional overhead as Crush will still parse and
@@ -311,6 +357,17 @@ included instead:
 }
 ```
 
+For `SessionStart`, the payload is just the session identity (it fires before
+any response exists, so there's nothing else to report):
+
+```jsonc
+{
+  "event": "SessionStart",
+  "session_id": "313909e",
+  "cwd": "/home/user/project",
+}
+```
+
 Note that `tool_input` field contains the raw JSON the model sent to the tool.
 
 To parse the stdin JSON in your hook script, read from stdin and use a tool like
@@ -350,10 +407,13 @@ fi
 
 | Exit Code | Meaning                                                          |
 | --------- | ---------------------------------------------------------------- |
-| 0         | Success. Stdout is parsed as JSON (see fields below).            |
+| 0         | Success. Stdout is parsed as JSON (see fields below). `SessionStart` also injects non-JSON stdout verbatim as context. |
 | 2         | **Block the tool.** Stderr is used as the deny reason (no JSON). |
 | 49        | **Halt the turn.** Stderr is used as the halt reason (no JSON).  |
 | Other     | Non-blocking error. Logged and ignored — the tool call proceeds. |
+
+Exit 2 and 49 are meaningless for `SessionStart` (there is no tool call to
+block and the turn hasn't started), so don't rely on them there.
 
 The difference between exit 2 and exit 49:
 

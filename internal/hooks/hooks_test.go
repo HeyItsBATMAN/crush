@@ -102,52 +102,52 @@ func TestParseStdout(t *testing.T) {
 
 	t.Run("empty stdout", func(t *testing.T) {
 		t.Parallel()
-		r := parseStdout("")
+		r := parseStdout("", false)
 		require.Equal(t, DecisionNone, r.Decision)
 	})
 
 	t.Run("valid allow", func(t *testing.T) {
 		t.Parallel()
-		r := parseStdout(`{"decision":"allow","context":"some context"}`)
+		r := parseStdout(`{"decision":"allow","context":"some context"}`, false)
 		require.Equal(t, DecisionAllow, r.Decision)
 		require.Equal(t, "some context", r.Context)
 	})
 
 	t.Run("valid deny", func(t *testing.T) {
 		t.Parallel()
-		r := parseStdout(`{"decision":"deny","reason":"not allowed"}`)
+		r := parseStdout(`{"decision":"deny","reason":"not allowed"}`, false)
 		require.Equal(t, DecisionDeny, r.Decision)
 		require.Equal(t, "not allowed", r.Reason)
 	})
 
 	t.Run("malformed JSON", func(t *testing.T) {
 		t.Parallel()
-		r := parseStdout(`{bad json}`)
+		r := parseStdout(`{bad json}`, false)
 		require.Equal(t, DecisionNone, r.Decision)
 	})
 
 	t.Run("unknown decision", func(t *testing.T) {
 		t.Parallel()
-		r := parseStdout(`{"decision":"maybe"}`)
+		r := parseStdout(`{"decision":"maybe"}`, false)
 		require.Equal(t, DecisionNone, r.Decision)
 	})
 
 	t.Run("version 1 accepted", func(t *testing.T) {
 		t.Parallel()
-		r := parseStdout(`{"version":1,"decision":"allow"}`)
+		r := parseStdout(`{"version":1,"decision":"allow"}`, false)
 		require.Equal(t, DecisionAllow, r.Decision)
 	})
 
 	t.Run("unknown higher version still parses", func(t *testing.T) {
 		t.Parallel()
-		r := parseStdout(`{"version":99,"decision":"deny","reason":"future"}`)
+		r := parseStdout(`{"version":99,"decision":"deny","reason":"future"}`, false)
 		require.Equal(t, DecisionDeny, r.Decision)
 		require.Equal(t, "future", r.Reason)
 	})
 
 	t.Run("halt true without decision", func(t *testing.T) {
 		t.Parallel()
-		r := parseStdout(`{"halt":true,"reason":"turn over"}`)
+		r := parseStdout(`{"halt":true,"reason":"turn over"}`, false)
 		require.True(t, r.Halt)
 		require.Equal(t, "turn over", r.Reason)
 		require.Equal(t, DecisionNone, r.Decision)
@@ -155,25 +155,25 @@ func TestParseStdout(t *testing.T) {
 
 	t.Run("context string form", func(t *testing.T) {
 		t.Parallel()
-		r := parseStdout(`{"decision":"allow","context":"one note"}`)
+		r := parseStdout(`{"decision":"allow","context":"one note"}`, false)
 		require.Equal(t, "one note", r.Context)
 	})
 
 	t.Run("context array form", func(t *testing.T) {
 		t.Parallel()
-		r := parseStdout(`{"decision":"allow","context":["first","second"]}`)
+		r := parseStdout(`{"decision":"allow","context":["first","second"]}`, false)
 		require.Equal(t, "first\nsecond", r.Context)
 	})
 
 	t.Run("context array drops empty entries", func(t *testing.T) {
 		t.Parallel()
-		r := parseStdout(`{"decision":"allow","context":["","keep",""]}`)
+		r := parseStdout(`{"decision":"allow","context":["","keep",""]}`, false)
 		require.Equal(t, "keep", r.Context)
 	})
 
 	t.Run("context null becomes empty", func(t *testing.T) {
 		t.Parallel()
-		r := parseStdout(`{"decision":"allow","context":null}`)
+		r := parseStdout(`{"decision":"allow","context":null}`, false)
 		require.Empty(t, r.Context)
 	})
 }
@@ -637,21 +637,21 @@ func TestParseStdoutUpdatedInput(t *testing.T) {
 
 	t.Run("nested object", func(t *testing.T) {
 		t.Parallel()
-		r := parseStdout(`{"decision":"allow","updated_input":{"command":"rtk cat foo.go"}}`)
+		r := parseStdout(`{"decision":"allow","updated_input":{"command":"rtk cat foo.go"}}`, false)
 		require.Equal(t, DecisionAllow, r.Decision)
 		require.Equal(t, `{"command":"rtk cat foo.go"}`, r.UpdatedInput)
 	})
 
 	t.Run("stringified backward compat", func(t *testing.T) {
 		t.Parallel()
-		r := parseStdout(`{"decision":"allow","updated_input":"{\"command\":\"rtk cat foo.go\"}"}`)
+		r := parseStdout(`{"decision":"allow","updated_input":"{\"command\":\"rtk cat foo.go\"}"}`, false)
 		require.Equal(t, DecisionAllow, r.Decision)
 		require.Equal(t, `{"command":"rtk cat foo.go"}`, r.UpdatedInput)
 	})
 
 	t.Run("no updated_input", func(t *testing.T) {
 		t.Parallel()
-		r := parseStdout(`{"decision":"allow"}`)
+		r := parseStdout(`{"decision":"allow"}`, false)
 		require.Empty(t, r.UpdatedInput)
 	})
 }
@@ -737,7 +737,7 @@ func TestAggregationUpdatedInput(t *testing.T) {
 		// parseStdout converts null updated_input to "", so aggregate
 		// never sees a patch — the merged input is empty and the
 		// original tool_input is used unchanged.
-		r := parseStdout(`{"decision":"allow","updated_input":null}`)
+		r := parseStdout(`{"decision":"allow","updated_input":null}`, false)
 		require.Empty(t, r.UpdatedInput)
 		agg := aggregate([]HookResult{r}, `{"command":"orig"}`)
 		require.Empty(t, agg.UpdatedInput)
@@ -840,35 +840,130 @@ func TestParseStdoutClaudeCodeFormat(t *testing.T) {
 
 	t.Run("allow with reason", func(t *testing.T) {
 		t.Parallel()
-		r := parseStdout(`{"hookSpecificOutput":{"permissionDecision":"allow","permissionDecisionReason":"RTK auto-rewrite"}}`)
+		r := parseStdout(`{"hookSpecificOutput":{"permissionDecision":"allow","permissionDecisionReason":"RTK auto-rewrite"}}`, false)
 		require.Equal(t, DecisionAllow, r.Decision)
 		require.Equal(t, "RTK auto-rewrite", r.Reason)
 	})
 
 	t.Run("allow with updatedInput", func(t *testing.T) {
 		t.Parallel()
-		r := parseStdout(`{"hookSpecificOutput":{"permissionDecision":"allow","updatedInput":{"command":"rtk cat foo.go"}}}`)
+		r := parseStdout(`{"hookSpecificOutput":{"permissionDecision":"allow","updatedInput":{"command":"rtk cat foo.go"}}}`, false)
 		require.Equal(t, DecisionAllow, r.Decision)
 		require.Equal(t, `{"command":"rtk cat foo.go"}`, r.UpdatedInput)
 	})
 
 	t.Run("deny", func(t *testing.T) {
 		t.Parallel()
-		r := parseStdout(`{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"not allowed"}}`)
+		r := parseStdout(`{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"not allowed"}}`, false)
 		require.Equal(t, DecisionDeny, r.Decision)
 		require.Equal(t, "not allowed", r.Reason)
 	})
 
 	t.Run("no permissionDecision", func(t *testing.T) {
 		t.Parallel()
-		r := parseStdout(`{"hookSpecificOutput":{}}`)
+		r := parseStdout(`{"hookSpecificOutput":{}}`, false)
 		require.Equal(t, DecisionNone, r.Decision)
 	})
 
 	t.Run("crush format still works", func(t *testing.T) {
 		t.Parallel()
-		r := parseStdout(`{"decision":"allow","context":"hello"}`)
+		r := parseStdout(`{"decision":"allow","context":"hello"}`, false)
 		require.Equal(t, DecisionAllow, r.Decision)
 		require.Equal(t, "hello", r.Context)
 	})
+}
+
+// TestParseStdoutPlainText verifies the SessionStart plain-text passthrough:
+// non-JSON stdout becomes context when allowed, and JSON keeps parsing
+// normally in both modes.
+func TestParseStdoutPlainText(t *testing.T) {
+	t.Parallel()
+
+	t.Run("plain text becomes context", func(t *testing.T) {
+		t.Parallel()
+		r := parseStdout("bd is initialized. Track work in beads.", true)
+		require.Equal(t, DecisionNone, r.Decision)
+		require.Equal(t, "bd is initialized. Track work in beads.", r.Context)
+	})
+
+	t.Run("plain text ignored when not allowed", func(t *testing.T) {
+		t.Parallel()
+		r := parseStdout("just some text", false)
+		require.Equal(t, DecisionNone, r.Decision)
+		require.Equal(t, "", r.Context)
+	})
+
+	t.Run("json context wins when allowed", func(t *testing.T) {
+		t.Parallel()
+		r := parseStdout(`{"context":"envelope context"}`, true)
+		require.Equal(t, "envelope context", r.Context)
+	})
+}
+
+// TestRunnerSessionStartPlainText verifies SessionStart hooks ignore
+// matchers (there is no tool name to match) and that their plain-text
+// stdout is returned verbatim as injectable context.
+func TestRunnerSessionStartPlainText(t *testing.T) {
+	t.Parallel()
+
+	hookCfg := config.HookConfig{
+		Matcher: "^bash$", // Must be ignored for SessionStart.
+		Command: `printf 'bd prime says hi'`,
+	}
+	r := NewRunner([]config.HookConfig{hookCfg}, t.TempDir(), t.TempDir())
+	result, err := r.RunSessionStart(context.Background(), "sess")
+	require.NoError(t, err)
+	require.Equal(t, 1, result.HookCount)
+	require.Equal(t, DecisionNone, result.Decision)
+	require.Equal(t, "bd prime says hi", result.Context)
+}
+
+// TestRunnerSessionStartJSONContext verifies SessionStart hooks that emit
+// the JSON envelope contribute their `context` field instead of raw
+// stdout, and that multiple hooks compose in config order.
+func TestRunnerSessionStartJSONContext(t *testing.T) {
+	t.Parallel()
+
+	r := NewRunner([]config.HookConfig{
+		{Command: `echo '{"context":"first"}'`},
+		{Command: `printf 'plain second'`},
+	}, t.TempDir(), t.TempDir())
+	result, err := r.RunSessionStart(context.Background(), "sess")
+	require.NoError(t, err)
+	require.Equal(t, 2, result.HookCount)
+	require.Equal(t, "first\nplain second", result.Context)
+}
+
+// TestRunnerSessionStartEmptyOutput verifies empty stdout injects nothing.
+func TestRunnerSessionStartEmptyOutput(t *testing.T) {
+	t.Parallel()
+
+	hookCfg := config.HookConfig{
+		Command: `printf ''`,
+	}
+	r := NewRunner([]config.HookConfig{hookCfg}, t.TempDir(), t.TempDir())
+	result, err := r.RunSessionStart(context.Background(), "sess")
+	require.NoError(t, err)
+	require.Equal(t, 1, result.HookCount)
+	require.Equal(t, "", result.Context)
+}
+
+// TestRunnerSessionStartEnvAndPayload verifies the SessionStart payload
+// and environment carry the session identity without tool fields.
+func TestRunnerSessionStartEnvAndPayload(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	outFile := filepath.Join(dir, "seen.txt")
+	hookCfg := config.HookConfig{
+		Command: fmt.Sprintf(`printf '%%s' "$CRUSH_EVENT" > %s; printf '|%%s|%%s' "$CRUSH_SESSION_ID" "$CRUSH_CWD" >> %s`, outFile, outFile),
+	}
+	r := NewRunner([]config.HookConfig{hookCfg}, dir, dir)
+	result, err := r.RunSessionStart(context.Background(), "sess-9")
+	require.NoError(t, err)
+	require.Equal(t, 1, result.HookCount)
+
+	got, err := os.ReadFile(outFile)
+	require.NoError(t, err)
+	require.Equal(t, EventSessionStart+"|sess-9|"+dir, string(got))
 }

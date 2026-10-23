@@ -18,10 +18,12 @@ const SupportedOutputVersion = 1
 
 // EventInput describes a single hook event invocation. Not every field
 // applies to every event: tool events (PreToolUse) carry ToolName and
-// ToolInput, while EventStop carries the session title and the final
-// assistant Message.
+// ToolInput, EventStop carries the session title and the final assistant
+// Message, and EventSessionStart fires with only the session identity and
+// directories.
 type EventInput struct {
-	// EventName is the hook event being fired (e.g. PreToolUse, Stop).
+	// EventName is the hook event being fired (e.g. PreToolUse, Stop,
+	// SessionStart).
 	EventName string
 	// SessionID is the session the event belongs to.
 	SessionID string
@@ -117,7 +119,11 @@ func BuildEnv(in EventInput) []string {
 
 // parseStdout parses the JSON output from a hook command's stdout.
 // Supports both Crush format and Claude Code format (hookSpecificOutput).
-func parseStdout(stdout string) HookResult {
+// When allowPlainText is set, stdout that is not valid JSON is returned
+// verbatim as context. SessionStart sets it so hooks can simply print
+// the text they want injected, matching Claude Code's SessionStart
+// behavior; other events ignore non-JSON stdout.
+func parseStdout(stdout string, allowPlainText bool) HookResult {
 	stdout = strings.TrimSpace(stdout)
 	if stdout == "" {
 		return HookResult{Decision: DecisionNone}
@@ -125,6 +131,9 @@ func parseStdout(stdout string) HookResult {
 
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(stdout), &raw); err != nil {
+		if allowPlainText {
+			return HookResult{Context: stdout}
+		}
 		return HookResult{Decision: DecisionNone}
 	}
 
@@ -142,6 +151,9 @@ func parseStdout(stdout string) HookResult {
 		UpdatedInput json.RawMessage `json:"updated_input"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &parsed); err != nil {
+		if allowPlainText {
+			return HookResult{Context: stdout}
+		}
 		return HookResult{Decision: DecisionNone}
 	}
 

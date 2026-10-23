@@ -411,6 +411,14 @@ match, so no matcher is needed:
 hook add Stop --command "./hooks/notify-finished.sh" --name notify
 ```
 
+The `SessionStart` event fires once, right after a new session's first user
+message. Plain-text stdout is injected into the agent's context for the
+session; empty output injects nothing:
+
+```bash
+hook add SessionStart --command "bd prime" --name beads-prime
+```
+
 #### `hook remove`
 
 Remove hooks from an event. Without `--name`, remove every hook for the event.

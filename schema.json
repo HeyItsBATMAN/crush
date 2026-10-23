@@ -98,7 +98,7 @@
             "type": "array"
           },
           "type": "object",
-          "description": "User-defined shell commands that fire on hook events (e.g. PreToolUse and Stop)"
+          "description": "User-defined shell commands that fire on hook events (e.g. PreToolUse/Stop/SessionStart)"
         },
         "env": {
           "additionalProperties": {
@@ -119,7 +119,7 @@
         },
         "matcher": {
           "type": "string",
-          "description": "Regex pattern tested against the tool name. Empty means match all tools. Ignored for non-tool events such as Stop."
+          "description": "Regex pattern tested against the tool name. Empty means match all tools. Ignored for non-tool events such as Stop or SessionStart."
         },
         "command": {
           "type": "string",

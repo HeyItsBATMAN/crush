@@ -88,11 +88,13 @@ internal/
 - **Hooks**: User-defined shell commands in `crushrc` (or `crush.json`)
   that fire on hook events. The engine (`internal/hooks/`) is
   independent of fantasy and agent — it takes inputs, runs commands,
-  returns decisions. Two events are wired up: `PreToolUse`, applied by the
+  returns decisions. Three events are wired up: `PreToolUse`, applied by the
   `hookedTool` decorator in `internal/agent/hooked_tool.go` before a
-  top-level tool runs (before permission checks), and `Stop`, fired by the
-  session agent at the end of each top-level turn. Sub-agents never fire
-  hooks. See `docs/hooks/README.md` for the user-facing protocol.
+  top-level tool runs (before permission checks); `Stop`, fired by the
+  session agent at the end of each top-level turn; and `SessionStart`,
+  fired by the session agent right after a new session's first user
+  message, with returned context injected into that turn. Sub-agents never
+  fire hooks. See `docs/hooks/README.md` for the user-facing protocol.
 - **CGO disabled**: builds with `CGO_ENABLED=0` and
   `GOEXPERIMENT=greenteagc`.
 

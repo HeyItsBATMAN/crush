@@ -11,6 +11,21 @@
 
 <p align="center"><img width="800" alt="Crush Demo" src="https://github.com/user-attachments/assets/58280caf-851b-470a-b6f7-d5c4ea8a1968" /></p>
 
+> **Note:** This is a fork of [charmbracelet/crush](https://github.com/charmbracelet/crush), based on v0.98.2, maintained by [@HeyItsBATMAN](https://github.com/HeyItsBATMAN). See [Fork changes](#fork-changes) for what this branch adds.
+
+## Fork changes
+
+This branch carries the following changes on top of upstream:
+
+- **SessionStart hook:** fires after a new session's first user message, with returned context injected into that turn
+- **Stop hook:** fires at the end of each top-level turn
+- **Skills panel:** invoke agent skills directly from the UI
+- **`crush run --yolo`:** skip permission prompts when running non-interactively
+- **`crush run --interactive`:** open the TUI with a prompt instead of piping
+- **Active agent reporting:** clients can show which agent is currently active
+- **Session usage counters:** keep usage totals when a session is saved
+- **OpenAPI fixes:** make the served OpenAPI document usable by code generators
+
 ## Features
 
 - **Multi-Model:** choose from a wide range of LLMs or add your own via OpenAI- or Anthropic-compatible APIs

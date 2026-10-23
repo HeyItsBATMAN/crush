@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "crush",
+  "project_id": "576e8220-d002-45a0-9e57-05922622d418"
+}
